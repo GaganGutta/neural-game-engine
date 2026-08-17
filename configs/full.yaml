@@ -1,0 +1,54 @@
+# The scale the project is designed for: one modern GPU, roughly a day of
+# training for the tokenizer and a day for the dynamics model.
+#   python -m ngx.data.collect --out data/my_way_home --frames 2000000 --workers 12
+#   python -m ngx.train.train_vqvae    --config configs/full.yaml
+#   python -m ngx.data.tokenize        --config configs/full.yaml
+#   python -m ngx.train.train_dynamics --config configs/full.yaml
+name: full
+seed: 0
+amp: true
+num_workers: 8
+log_every: 100
+eval_every: 5000
+
+data:
+  root: data/my_way_home
+  env: my_way_home
+  frames: 2000000
+  frame_skip: 4
+  workers: 12
+
+tokenizer:
+  ch: 128
+  embed_dim: 64
+  num_codes: 1024
+  n_res: 2
+  commit_beta: 0.25
+  batch_size: 128
+  steps: 120000
+  lr: 3.0e-4
+
+dynamics:
+  context: 16
+  d_model: 512
+  n_layers: 12
+  n_heads: 8
+  dropout: 0.0
+  batch_size: 32
+  steps: 300000
+  lr: 3.0e-4
+  warmup: 2000
+  maskgit_frac: 0.5
+
+infer:
+  decode: maskgit
+  maskgit_steps: 8
+  temperature: 1.0
+  top_k: 50
+
+memory:
+  enabled: true
+  capacity: 16384
+  k: 2
+  min_sim: 0.9
+  write_every: 4

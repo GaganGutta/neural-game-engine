@@ -1,0 +1,53 @@
+# CPU-trainable config. This is the one the shipped checkpoint was trained with,
+# on an 8-core laptop CPU with no GPU. Everything is smaller than the plan calls
+# for; see full.yaml for the intended scale.
+name: small
+seed: 0
+amp: false          # bf16 autocast is a loss on this CPU, see docs/BENCHMARKS.md
+num_workers: 4
+log_every: 100
+eval_every: 2000
+
+data:
+  root: data/my_way_home
+  env: my_way_home
+  frames: 150000
+  frame_skip: 4
+  workers: 6
+
+tokenizer:
+  ch: 128
+  embed_dim: 64
+  num_codes: 512
+  n_res: 2
+  commit_beta: 0.25
+  batch_size: 32
+  steps: 12000
+  lr: 3.0e-4
+
+dynamics:
+  context: 8          # frames of history the model sees
+  d_model: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.0
+  batch_size: 8
+  steps: 8000
+  lr: 3.0e-4
+  warmup: 300
+  # Fraction of steps trained with the MaskGIT objective rather than pure
+  # next-frame teacher forcing. Both share one set of weights.
+  maskgit_frac: 0.5
+
+infer:
+  decode: maskgit     # 'maskgit' (parallel) or 'raster' (autoregressive)
+  maskgit_steps: 8
+  temperature: 1.0
+  top_k: 50
+
+memory:
+  enabled: true
+  capacity: 4096
+  k: 2
+  min_sim: 0.9
+  write_every: 4

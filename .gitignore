@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+
+# VizDoom drops this next to whatever launched it.
+_vizdoom.ini
+_vizdoom/
+
+# Datasets and checkpoints are rebuilt by the pipeline, never committed.
+data/
+runs/
+*.npy
+*.pt
+*.ckpt
+
+# ...but the README's demo media is part of the repo.
+!assets/*.gif
+!assets/*.png

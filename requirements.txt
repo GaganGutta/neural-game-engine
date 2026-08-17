@@ -1,0 +1,8 @@
+torch>=2.4
+numpy>=1.24
+opencv-python>=4.8
+pygame>=2.5
+imageio>=2.31
+pyyaml>=6.0
+tqdm>=4.65
+vizdoom>=1.2

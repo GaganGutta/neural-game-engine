@@ -9,12 +9,15 @@ venv/
 _vizdoom.ini
 _vizdoom/
 
-# Datasets and checkpoints are rebuilt by the pipeline, never committed.
+# Datasets and training runs are rebuilt by the pipeline, never committed.
 data/
 runs/
 *.npy
-*.pt
 *.ckpt
+
+# ...but the two weights that make `python play.py` work from a clone are.
+*.pt
+!checkpoints/**/*.pt
 
 # ...but the README's demo media is part of the repo.
 !assets/*.gif

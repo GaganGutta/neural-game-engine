@@ -6,7 +6,7 @@ seed: 0
 amp: false          # bf16 autocast is a loss on this CPU, see docs/BENCHMARKS.md
 num_workers: 4
 log_every: 100
-eval_every: 2000
+eval_every: 1500
 
 data:
   root: data/my_way_home
@@ -25,15 +25,19 @@ tokenizer:
   steps: 12000
   lr: 3.0e-4
 
+# Sized by measurement, not by taste. On this CPU the binding constraint is
+# samples seen, not parameters: at a fixed wall-clock budget this config gets
+# through 2.2x more windows than d_model=256/context=8, and an undertrained
+# model would rather have the data. See docs/BENCHMARKS.md for the machine.
 dynamics:
-  context: 8          # frames of history the model sees
-  d_model: 256
+  context: 6          # frames of history the model sees
+  d_model: 192
   n_layers: 4
   n_heads: 8
   dropout: 0.0
-  batch_size: 8
-  steps: 8000
-  lr: 3.0e-4
+  batch_size: 16
+  steps: 6500
+  lr: 6.0e-4          # short schedule, so push the LR harder than the usual 3e-4
   warmup: 300
   # Fraction of steps trained with the MaskGIT objective rather than pure
   # next-frame teacher forcing. Both share one set of weights.
@@ -41,13 +45,24 @@ dynamics:
 
 infer:
   decode: maskgit     # 'maskgit' (parallel) or 'raster' (autoregressive)
-  maskgit_steps: 8
+  # 4, not 8: measured in docs/DECODE.md. Past ~4 passes neither PSNR nor
+  # sharpness moves on this checkpoint, so the extra latency buys nothing. At
+  # full scale the decoder may well become the limiting factor again -- re-run
+  # ngx.eval.decode_quality before assuming this number transfers.
+  maskgit_steps: 4
   temperature: 1.0
   top_k: 50
 
 memory:
-  enabled: true
+  # Off by default, and docs/DRIFT.md explains why: on this CPU-scale checkpoint
+  # it moves return-to-place consistency by less than the run-to-run spread.
+  # Retrieval finds the right room ~80% of the time; the model is simply too
+  # small to use a distant context slot. Toggle it live with M in play.py.
+  enabled: false
   capacity: 4096
   k: 2
+  # Cosine similarity on mean codebook embeddings. Measured on the reference
+  # trajectory: matched revisits average 0.96, random pairs 0.47.
   min_sim: 0.9
   write_every: 4
+  exclude_recent: 64   # ignore the last N writes; the recent past is already in context

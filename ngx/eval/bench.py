@@ -153,7 +153,7 @@ def main() -> None:
     cur = dict(base.__dict__)
 
     print(f"benchmarking on {device} ({platform.processor() or platform.machine()})")
-    rows, ref, best_cfg, best_fps = [], None, dict(cur), 0.0
+    rows, best_rollout, best_cfg, best_fps = [], None, dict(cur), 0.0
     for label, delta in STEPS:
         trial = {**best_cfg, **delta}
         try:
@@ -164,15 +164,17 @@ def main() -> None:
             print(f"  {label:28s} unavailable: {msg}")
             rows.append({"label": label, "error": msg})
             continue
-        if ref is None:
-            ref = r["rollout"]
-        r["psnr"] = psnr_u8(r["rollout"], ref)
+        # Compare against the configuration this change was applied to, not
+        # against row 1. Otherwise every row after the decoder change is scored
+        # against a different decoder's rollout and the column stops meaning
+        # "did this change alter the output".
+        r["psnr"] = float("inf") if best_rollout is None else psnr_u8(r["rollout"], best_rollout)
         r["label"] = label
         # Keep the change only if it actually made things faster. Later rows
         # then build on the best configuration rather than on a regression.
         r["kept"] = r["fps"] >= best_fps
         if r["kept"]:
-            best_cfg, best_fps = trial, r["fps"]
+            best_cfg, best_fps, best_rollout = trial, r["fps"], r["rollout"]
         rows.append(r)
         print(
             f"  {label:28s} {r['fps']:7.2f} fps  {r['ms']:8.1f} ms  "
@@ -191,12 +193,18 @@ def main() -> None:
         f"- greedy decoding, {a.warmup} warmup frames discarded, "
         f"up to {a.frames} timed frames per row (cap {a.budget:g}s)",
         "",
-        "Each row applies one change on top of the fastest configuration so far. A "
-        "change that measures slower is reverted, and says so. PSNR is against the "
-        "first row's rollout, so a change that buys speed by degrading the output "
-        "cannot hide in this table.",
+        "Each row applies one change on top of the fastest configuration so far. A change "
+        "that measures slower is reverted, and says so.",
         "",
-        "| step | fps | ms/frame | passes/frame | vs. row 1 | weights | peak mem | PSNR vs ref | |",
+        "`output delta` is PSNR between this row's rollout and the rollout of the "
+        "configuration the change was applied to. It answers one question: *did this "
+        "change alter what comes out?* `identical` means the transformation is exact. A "
+        "finite number means the output moved -- which is expected when the decoder "
+        "itself changes, and a warning sign when only the numerics did. It is not a "
+        "quality score; for decode quality against ground truth see "
+        "[DECODE.md](DECODE.md).",
+        "",
+        "| step | fps | ms/frame | passes/frame | vs. row 1 | weights | peak mem | output delta | |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
@@ -204,7 +212,7 @@ def main() -> None:
             lines.append(f"| {r['label']} | unavailable | | | | | | | _{r['error']}_ |")
             continue
         mem = f"{r['mem_mb']:.0f} MB" if r["mem_mb"] else "n/a"
-        psnr = "reference" if r["psnr"] == float("inf") else f"{r['psnr']:.1f} dB"
+        psnr = "identical" if r["psnr"] == float("inf") else f"{r['psnr']:.1f} dB"
         lines.append(
             f"| {r['label']} | **{r['fps']:.2f}** | {r['ms']:.1f} | {r['passes']} | "
             f"{r['fps'] / first_fps:.1f}x | {r['weights_mb']:.1f} MB | {mem} | {psnr} | "
@@ -216,8 +224,9 @@ def main() -> None:
         "includes the interpreter and both models, so treat it as an envelope rather "
         "than a model footprint. `weights` is the dynamics model's parameter bytes.",
         "",
-        "A PSNR of `reference` on the KV-cache row is the point of that row: caching "
-        "the prefix is an exact transformation, and the identical rollout is the proof.",
+        "`identical` on the KV-cache row is the point of that row. Caching the prefix is "
+        "an exact transformation, and a bit-for-bit identical rollout under greedy "
+        "decoding is the proof rather than the claim.",
         "",
         "Regenerate with `python -m ngx.eval.bench --config configs/small.yaml`.",
         "",

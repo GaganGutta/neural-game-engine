@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0",
     "tqdm>=4.65",
     "vizdoom>=1.2",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

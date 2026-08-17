@@ -78,11 +78,11 @@ plausible-looking Doom is exactly what a broken world model looks like.
 
 ## Drift, and why memory is placed where it is
 
-An 8-frame context means everything the model knew about a room is gone eight
-frames after you leave. Walk out, walk back, and the room is regenerated from
-nothing — usually as a *different* room. The rollout stays plausible while
-ceasing to be consistent. That is the characteristic failure, and it is not
-fixed by training longer.
+A short sliding context — 6 frames in the shipped config, 16 in `full.yaml` —
+means everything the model knew about a room is gone moments after you leave.
+Walk out, walk back, and the room is regenerated from nothing, usually as a
+*different* room. The rollout stays plausible while ceasing to be consistent.
+That is the characteristic failure, and it is not fixed by training longer.
 
 The countermeasure is a retrieval memory keyed on the bag-of-codes histogram of
 a frame: which codebook entries appear in it, L2-normalised, compared by cosine
@@ -150,6 +150,43 @@ it used.
   and labelled, and later rows build on the best configuration. Not every
   optimisation survives contact with a given machine, and the table says which
   ones did not.
+
+## What the measurements said, including where I was wrong
+
+Three things did not go the way the design assumed. All three are in the docs
+with numbers attached rather than quietly fixed.
+
+**Retrieval memory does not help at this scale.** It was the point of stage 5
+and it is a wash: -0.69 dB on return-to-place against a ±1.03 dB run-to-run
+spread. The first version of this evaluation ran one rollout per configuration
+and showed memory *winning* by 0.47 dB; four seeds showed that the win was the
+seed. The mechanism itself is fine — the correct past frame ranks top for 55%
+of genuine revisits and top-two for ~80% — but a 2.0M-parameter model leans so
+heavily on the most recent frame that perturbing a distant context slot barely
+registers. See [DRIFT.md](DRIFT.md).
+
+**The retrieval key had to change, and the first fix was also wrong.** The
+original bag-of-codes histogram scored matched revisits at 0.34 against 0.09
+for random pairs, so the 0.9 threshold fired on literally nothing across 1000
+frames. Mean-pooled codebook embeddings fixed the *scale* (0.96 vs 0.47) by
+using the metric structure the codebook already learned. But the intuition that
+came with it — that a spatially-aware key would discriminate better — was
+backwards: 2x2 spatial pooling dropped top-1 retrieval from 0.55 to 0.14,
+because turning your head moves content across the grid and a spatial key reads
+that as a different place.
+
+**More decoding passes buy nothing here.** The premise of stage 4 was that
+MaskGIT trades quality for speed and the job is finding the sweet spot. On this
+checkpoint there is no trade to make: PSNR drifts slightly *down* from 1 pass to
+64, and sharpness is flat at ~0.52x the real frame's detail across every pass
+count. The blur is not coming from the decoder, so no decoding schedule can fix
+it. I initially wrote that sharpness would rise with pass count; it does not,
+and [DECODE.md](DECODE.md) says so. `maskgit_steps` is 4 because 4 is where the
+measurements stop moving, not because 8 sounded right.
+
+What did work as designed: the KV cache is exactly what it claims to be
+(bit-identical rollouts, 6.2x), and MaskGIT over raster is a 8.8x win on top of
+that at no measurable cost — 0.75 fps to 41.3 fps end to end.
 
 ## Honest limitations
 

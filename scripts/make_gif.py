@@ -29,31 +29,34 @@ from ngx.eval.bench import psnr_u8  # noqa: E402
 from ngx.eval.drift import reference_trajectory  # noqa: E402
 from ngx.infer.load import load_engine  # noqa: E402
 
-BAR = 34
+TOP = 30
+BOT = 26
 GAP = 8
 BG = (16, 16, 20)
 
 
-def _label(canvas, text, x, y, color=(238, 238, 244), scale=0.5):
+def _label(canvas, text, x, y, color=(238, 238, 244), scale=0.45):
     cv2.putText(canvas, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
 
 
 def compose(real, fake, scale: int, step: int, total: int, retrieved: int) -> np.ndarray:
     s = 64 * scale
     up = lambda im: cv2.resize(im, (s, s), interpolation=cv2.INTER_NEAREST)  # noqa: E731
-    h, w = s + BAR, s * 2 + GAP
+    h, w = TOP + s + BOT, s * 2 + GAP
     canvas = np.full((h, w, 3), BG, np.uint8)
-    canvas[BAR:, :s] = up(real)
-    canvas[BAR:, s + GAP :] = up(fake)
+    canvas[TOP : TOP + s, :s] = up(real)
+    canvas[TOP : TOP + s, s + GAP :] = up(fake)
 
-    _label(canvas, "REAL GAME (VizDoom)", 8, 22, (150, 150, 165))
-    _label(canvas, "WORLD MODEL (no game engine)", s + GAP + 8, 22, (120, 220, 140))
+    # Pane labels on top, run state on the bottom. Sharing one bar made the
+    # right-hand label collide with the counter at this width.
+    _label(canvas, "REAL GAME (VizDoom)", 8, 20, (150, 150, 165))
+    _label(canvas, "WORLD MODEL (no engine)", s + GAP + 8, 20, (120, 220, 140))
 
     d = psnr_u8(real[None], fake[None])
-    tag = f"frame {step:3d}/{total}   PSNR {d:4.1f} dB"
+    tag = f"frame {step:3d}/{total}    PSNR {d:4.1f} dB"
     if retrieved:
-        tag += f"   memory +{retrieved}"
-    _label(canvas, tag, w - 250, 22, (150, 150, 165), 0.42)
+        tag += f"    memory +{retrieved}"
+    _label(canvas, tag, 8, h - 8, (150, 150, 165), 0.42)
     return canvas
 
 
@@ -66,6 +69,7 @@ def main() -> None:
     p.add_argument("--scale", type=int, default=4)
     p.add_argument("--fps", type=int, default=12)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--colors", type=int, default=96, help="GIF palette size")
     p.add_argument("--out", default="assets/demo.gif")
     a = p.parse_args()
 
@@ -89,12 +93,14 @@ def main() -> None:
             print(f"  {k + 1}/{n}")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-    imageio.mimsave(a.out, out, duration=1000 / a.fps, loop=0)
+    # Quantise the palette: a README that takes ten seconds to load is a README
+    # nobody scrolls past.
+    imageio.mimsave(a.out, out, duration=1000 / a.fps, loop=0, palettesize=a.colors)
     mb = os.path.getsize(a.out) / 1e6
     print(f"wrote {a.out}  ({n} frames, {mb:.1f} MB)")
 
     still = a.out.rsplit(".", 1)[0] + ".png"
-    cv2.imwrite(still, cv2.cvtColor(out[len(out) // 2], cv2.COLOR_RGB2BGR))
+    cv2.imwrite(still, cv2.cvtColor(out[min(len(out) - 1, 12)], cv2.COLOR_RGB2BGR))
     print(f"wrote {still}")
 
 

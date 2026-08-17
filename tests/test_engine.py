@@ -94,7 +94,10 @@ def _mem(**kw):
     kw.setdefault("write_every", 1)
     kw.setdefault("exclude_recent", 3)
     kw.setdefault("min_sim", 0.9)
-    return RetrievalMemory(num_codes=NUM_CODES, tokens_per_frame=8, capacity=32, k=2, **kw)
+    torch.manual_seed(0)
+    # Stand-in codebook: near-orthogonal rows, so unrelated frames score low.
+    embed = torch.randn(NUM_CODES, 32)
+    return RetrievalMemory(code_embed=embed, tokens_per_frame=8, capacity=32, k=2, **kw)
 
 
 def test_memory_recalls_the_matching_frame_not_the_recent_one():

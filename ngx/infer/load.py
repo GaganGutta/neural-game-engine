@@ -18,14 +18,31 @@ from .engine import EngineConfig, NeuralGameEngine
 from .memory import RetrievalMemory
 
 
+#: repo root, so shipped checkpoints resolve regardless of the working directory
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def find_ckpt(cfg: dict, stage: str, filename: str) -> str:
+    """Prefer a locally trained checkpoint, fall back to the one in the repo.
+
+    Training writes to ``runs/<name>/<stage>/``. A fresh clone has no ``runs/``,
+    so ``checkpoints/<name>/`` carries the weights that make ``python play.py``
+    work without training anything first.
+    """
+    local = os.path.join(run_dir(cfg, stage), filename)
+    if os.path.exists(local):
+        return local
+    shipped = os.path.join(_ROOT, "checkpoints", cfg.get("name", "default"), filename)
+    if os.path.exists(shipped):
+        return shipped
+    raise FileNotFoundError(
+        f"no checkpoint at {local} or {shipped}. Train it first -- see the README."
+    )
+
+
 def load_models(cfg: dict, device: torch.device):
-    vq_path = os.path.join(run_dir(cfg, "tokenizer"), "vqvae.pt")
-    dyn_path = os.path.join(run_dir(cfg, "dynamics"), "dynamics.pt")
-    for p in (vq_path, dyn_path):
-        if not os.path.exists(p):
-            raise FileNotFoundError(
-                f"missing checkpoint {p}. Train it first -- see the README pipeline."
-            )
+    vq_path = find_ckpt(cfg, "tokenizer", "vqvae.pt")
+    dyn_path = find_ckpt(cfg, "dynamics", "dynamics.pt")
 
     vck = load_ckpt(vq_path, map_location="cpu")
     tc = vck["cfg"]["tokenizer"]
@@ -50,10 +67,10 @@ def build_memory(cfg: dict, vq: VQVAE, dyn: DynamicsTransformer, device) -> Retr
     if not mc.get("enabled", False):
         return None
     return RetrievalMemory(
-        num_codes=vq.num_codes, tokens_per_frame=dyn.L,
+        code_embed=vq.quantizer.embed, tokens_per_frame=dyn.L,
         capacity=mc.get("capacity", 4096), k=mc.get("k", 2),
         min_sim=mc.get("min_sim", 0.9), write_every=mc.get("write_every", 4),
-        device=device,
+        exclude_recent=mc.get("exclude_recent", 64), device=device,
     )
 
 

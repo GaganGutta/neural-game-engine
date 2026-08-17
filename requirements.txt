@@ -6,3 +6,4 @@ imageio>=2.31
 pyyaml>=6.0
 tqdm>=4.65
 vizdoom>=1.2
+psutil>=5.9        # optional: peak-memory column in ngx.eval.bench

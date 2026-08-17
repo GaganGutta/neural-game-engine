@@ -41,7 +41,7 @@ for `T-1` times the supervision, which is a good trade at these sizes.
 
 The action sits at the *end* of its block, not the start. That is what makes
 "everything before block `t+1`" equal "everything a player knows when frame
-`t+1` is about to be drawn" — the layout encodes the causality instead of
+`t+1` is about to be drawn". The layout encodes the causality instead of
 relying on a comment to assert it.
 
 ## Two decoders, one set of weights
@@ -50,9 +50,9 @@ Because B blocks are bidirectional over a partially-masked frame, the trained
 model supports two decoding strategies with no retraining and no second
 objective:
 
-* **raster** — reveal one token per pass, left to right. 64 passes. This is the
+* **raster**: reveal one token per pass, left to right. 64 passes. This is the
   autoregressive baseline.
-* **MaskGIT** — every pass predicts all remaining slots, keep the most
+* **MaskGIT**: every pass predicts all remaining slots, keep the most
   confident ones, repeat. 8 passes.
 
 They are the same weights on the same mask, which is what makes the speed
@@ -71,14 +71,14 @@ This is exact, not approximate, and the benchmark proves it rather than
 asserting it: the cached and uncached rows produce bit-identical rollouts under
 greedy decoding, which shows up in the table as an infinite PSNR.
 
-`tests/test_dynamics.py` pins the same property at the logit level — the
+`tests/test_dynamics.py` pins the same property at the logit level: the
 training forward pass and the cached inference path must agree to 1e-4. Without
 that test, a subtly wrong cache would still produce plausible-looking Doom, and
 plausible-looking Doom is exactly what a broken world model looks like.
 
 ## Drift, and why memory is placed where it is
 
-A short sliding context — 6 frames in the shipped config, 16 in `full.yaml` —
+A short sliding context (6 frames in the shipped config, 16 in `full.yaml`)
 means everything the model knew about a room is gone moments after you leave.
 Walk out, walk back, and the room is regenerated from nothing, usually as a
 *different* room. The rollout stays plausible while ceasing to be consistent.
@@ -93,7 +93,7 @@ maze from another. No extra network, no extra training.
 The placement matters more than the mechanism. Retrieved frames **replace the
 oldest context slots** rather than extending the context. The block count stays
 exactly what the model was trained on, so the retrieval layer needs no
-architectural change and no fine-tuning — it is a pure inference-time addition
+architectural change and no fine-tuning. It is a pure inference-time addition
 that can be toggled with a keypress while playing.
 
 Two guards keep it honest:
@@ -107,12 +107,12 @@ Two guards keep it honest:
 
 Two numbers, because there are two different failure modes.
 
-**Divergence from the real game** — run the model and the real game under
+**Divergence from the real game.** Run the model and the real game under
 identical actions from identical seed frames, and track PSNR. This decays no
 matter what; the model samples, it does not simulate. The shape of the curve is
 the signal, not the floor.
 
-**Return-to-place consistency** — find two moments where the real player stood
+**Return-to-place consistency.** Find two moments where the real player stood
 in the same spot facing the same way, separated by a long gap, and ask whether
 the model drew the same room both times. This is the number retrieval memory is
 built to move.
@@ -124,7 +124,7 @@ reports the real game's own return-to-place PSNR alongside the model's. The
 model's number is only interpretable relative to that ceiling.
 
 It also needs the two visits to be genuinely far apart. On the reference
-trajectory the median gap between matched poses is several hundred frames —
+trajectory the median gap between matched poses is several hundred frames,
 orders of magnitude beyond the context window, so nothing except memory can
 carry the room across.
 
@@ -160,8 +160,8 @@ with numbers attached rather than quietly fixed.
 and it is a wash: -0.69 dB on return-to-place against a ±1.03 dB run-to-run
 spread. The first version of this evaluation ran one rollout per configuration
 and showed memory *winning* by 0.47 dB; four seeds showed that the win was the
-seed. The mechanism itself is fine — the correct past frame ranks top for 55%
-of genuine revisits and top-two for ~80% — but a 2.0M-parameter model leans so
+seed. The mechanism itself is fine: the correct past frame ranks top for 55%
+of genuine revisits and top-two for ~80%. But a 2.0M-parameter model leans so
 heavily on the most recent frame that perturbing a distant context slot barely
 registers. See [DRIFT.md](DRIFT.md).
 
@@ -170,7 +170,7 @@ original bag-of-codes histogram scored matched revisits at 0.34 against 0.09
 for random pairs, so the 0.9 threshold fired on literally nothing across 1000
 frames. Mean-pooled codebook embeddings fixed the *scale* (0.96 vs 0.47) by
 using the metric structure the codebook already learned. But the intuition that
-came with it — that a spatially-aware key would discriminate better — was
+came with it, that a spatially-aware key would discriminate better, was
 backwards: 2x2 spatial pooling dropped top-1 retrieval from 0.55 to 0.14,
 because turning your head moves content across the grid and a spatial key reads
 that as a different place.
@@ -186,7 +186,7 @@ measurements stop moving, not because 8 sounded right.
 
 What did work as designed: the KV cache is exactly what it claims to be
 (bit-identical rollouts, 6.2x), and MaskGIT over raster is a 8.8x win on top of
-that at no measurable cost — 0.75 fps to 41.3 fps end to end.
+that at no measurable cost: 0.75 fps to 41.3 fps end to end.
 
 ## Honest limitations
 

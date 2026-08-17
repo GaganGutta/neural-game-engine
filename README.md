@@ -9,7 +9,7 @@ from the last few frames plus a keypress.
 
 *Left: VizDoom. Right: a 2.0M-parameter transformer predicting the next frame
 from the last 6 frames plus the action, at 41 fps on a laptop CPU. Same actions
-into both. The PSNR readout is the honest part — watch it fall as the rollout
+into both. The PSNR readout is the honest part. Watch it fall as the rollout
 feeds on its own output.*
 
 ```bash
@@ -50,8 +50,8 @@ Sections below measure how fast it drifts and what claws it back.
 pip install -r requirements.txt
 ```
 
-Then play the shipped checkpoint — the weights are in `checkpoints/small/` (16 MB),
-so this works from a clone with no training and no dataset:
+Then play the shipped checkpoint. The weights are in `checkpoints/small/` (16 MB), so
+this works from a clone with no training and no dataset:
 
 ```bash
 python play.py
@@ -79,11 +79,11 @@ between MaskGIT and raster decoding, `ESC` quits.
 
 Final numbers for the shipped checkpoint: tokenizer **28.2 dB** on held-out
 frames with 429/512 codes live; dynamics **2.0M params**, val loss 3.20, and
-0.152 token accuracy with the entire next frame masked — 78x better than the
+0.152 token accuracy with the entire next frame masked, 78x better than the
 1/512 chance rate, and low enough that the world is recognisable rather than
 sharp.
 
-The one design decision worth reading about is the sequence layout — two
+The one design decision worth reading about is the sequence layout: two
 streams in one sequence, so context stays clean while the target frame is
 masked, which is what lets a single set of weights serve both a 64-pass
 autoregressive decoder and a 4-pass parallel one with no second training run.
@@ -106,7 +106,7 @@ measures slower is reverted and labelled.
 
 Two things in that table are worth more than the headline number.
 
-`identical` on the KV-cache row is not a formatting quirk — it is the proof.
+`identical` on the KV-cache row is not a formatting quirk. It is the proof.
 Caching the prefix is supposed to be an *exact* transformation, so under greedy
 decoding the cached and uncached rollouts must come out bit-for-bit the same,
 and they do. `output delta` compares each row against the configuration its
@@ -116,7 +116,7 @@ than doubling as a quality score.
 And two of the four optimisations lost. bf16 and int8 both measure *slower*
 than fp32 here: the matmuls are small enough that quantise/dequantise overhead
 outruns the arithmetic saved. int8 still cuts weights 16x (8.0 MB to 0.5 MB),
-which matters if you are memory-bound rather than compute-bound — this machine
+which matters if you are memory-bound rather than compute-bound. This machine
 is neither. `torch.compile` cannot run at all without MSVC. The table reports
 all of it rather than showing only the three rows that went up and to the right.
 
@@ -127,13 +127,13 @@ Full detail in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), and
 
 A 6-frame context means everything the model knew about a room is gone six
 frames after you leave it. Walk out, walk back, and the room gets regenerated
-from nothing — usually as a *different* room. The rollout stays plausible while
+from nothing, usually as a *different* room. The rollout stays plausible while
 ceasing to be consistent.
 
 The countermeasure is a retrieval memory keyed on the mean codebook embedding
 of each frame, compared by cosine similarity. Retrieved frames **replace the
 oldest context slots** rather than extending the context, so the model sees
-exactly the block layout it was trained on and needs no retraining — you can
+exactly the block layout it was trained on and needs no retraining, and you can
 toggle it mid-game with `M`.
 
 **It does not work at this scale, and the repo says so.** Over 1000 frames on a
@@ -147,8 +147,8 @@ frames:
 
 The first version of this evaluation ran one rollout per configuration and
 showed memory winning by 0.47 dB. Four seeds showed the win was the seed. The
-mechanism works — the correct past frame is the top-ranked match for 55% of
-genuine revisits and top-two for ~80% — but a 2.0M-parameter model leans so
+mechanism works: the correct past frame is the top-ranked match for 55% of
+genuine revisits and top-two for ~80%. But a 2.0M-parameter model leans so
 hard on the most recent frame that perturbing a distant context slot barely
 registers, and the ~45% of retrievals that surface the wrong room cost about
 what the right ones gain.
@@ -173,7 +173,7 @@ GPU, from a cold checkout:
 
 Or all of it at once with `bash scripts/reproduce.sh configs/small.yaml`.
 
-The tokenizer is the part that works well at this scale — 64 discrete tokens
+The tokenizer is the part that works well at this scale. 64 discrete tokens
 per frame, reconstructed at **28.2 dB** on held-out frames, 429 of 512 codebook
 entries in active use. Top row is ground truth, bottom row is a round trip
 through the codebook:
@@ -213,7 +213,7 @@ python -m pytest tests/ -q
 
 The one that matters is `test_cached_inference_matches_training_forward`:
 `play.py` never runs the training forward pass, so if the cached path and the
-training path ever disagree, the model you play is not the model you trained —
+training path ever disagree, the model you play is not the model you trained,
 and the failure is silent, because a subtly wrong world model still produces
 plausible-looking Doom.
 

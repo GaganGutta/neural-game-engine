@@ -168,33 +168,82 @@ def closed_loop(engine, vq, windows, device, horizon: int):
     return model, frozen, ceil
 
 
+def _churn_stats(frames: list, tokens: torch.Tensor) -> dict:
+    """Identical fraction and token churn over consecutive pairs of one rollout."""
+    ident = [bool(np.array_equal(frames[k], frames[k - 1])) for k in range(1, len(frames))]
+    churn = [int((tokens[k] != tokens[k - 1]).sum()) for k in range(1, len(tokens))]
+    return {"ident": ident, "churn": churn}
+
+
 @torch.no_grad()
-def still_churn(engine, windows, horizon: int, action: int):
-    """Hold the no-op action in closed loop and watch how much still moves.
+def still_compare(cfg, engine, vq, device, starts: int, horizon: int, prefix_len: int, noop: int):
+    """Hold the no-op in the model and in the real game, from identical starts.
 
     The teacher-forced static row predicts shimmer from single-step behaviour.
-    This measures it the way a viewer meets it: the model consuming its own
-    output while the player does nothing. Two numbers, because they answer
-    different halves of the question. Mean tokens changed per frame says how
-    much is moving; fraction of byte-identical frames says how often the
-    picture is genuinely still, which is the only thing a viewer registers as
-    "not shimmering".
+    This measures it the way a viewer meets it: nothing pressed, the model
+    consuming its own output. But a churn number on its own supports either
+    reading -- too twitchy or too sticky -- so the real game is run through the
+    same prefix, the same no-op, and the same tokenizer, and reported beside it.
+
+    Frames are compared byte-wise for the identical fraction, and in token space
+    for churn, because tokens are the channel the model actually acts in and the
+    decoder is shared by both rows.
     """
+    from ..envs import make_env
+
     C = engine.C
-    churn, identical = [], []
-    for frames, actions in windows:
-        engine.reset(frames[:C], actions[:C])
-        prev_tok = engine.tokens[-1].clone()
-        prev_frame = None
-        for k in range(horizon):
-            f = engine.step(action)
-            tok = engine.tokens[-1]
-            if k > 0:  # skip k=0: that one compares against a real frame, not a predicted one
-                churn.append(int((tok != prev_tok).sum()))
-                identical.append(bool(np.array_equal(f, prev_frame)))
-            prev_tok = tok.clone()
-            prev_frame = f.copy()
-    return float(np.mean(churn)), float(np.mean(identical)), len(churn)
+    rng_prefix = np.random.default_rng(0)
+    real, model = {"ident": [], "churn": []}, {"ident": [], "churn": []}
+
+    for s in range(starts):
+        prefix = [int(rng_prefix.integers(engine.model.num_actions)) for _ in range(prefix_len)]
+        env = make_env(cfg["data"]["env"], frame_size=64,
+                       frame_skip=cfg["data"]["frame_skip"], seed=s, episode_timeout=0)
+        try:
+            ctx = []
+            f = env.reset()
+            for i in range(prefix_len - 1):
+                ctx.append(f)
+                f, _ = env.step(prefix[i])
+            ctx.append(f)
+            ctx_frames = np.asarray(ctx[-C:])
+            ctx_actions = np.asarray(prefix[prefix_len - C : prefix_len - 1] + [noop])
+            real_frames = []
+            for _ in range(horizon):
+                f, done = env.step(noop)
+                real_frames.append(f)
+                if done:
+                    break
+        finally:
+            env.close()
+        if len(real_frames) < 2:
+            continue
+
+        rs = _churn_stats(real_frames, encode(vq, np.asarray(real_frames), device))
+        real["ident"] += rs["ident"]
+        real["churn"] += rs["churn"]
+
+        engine.reset(ctx_frames, ctx_actions)
+        mf, mt = [], []
+        for _ in range(len(real_frames)):
+            mf.append(engine.step(noop))
+            mt.append(engine.tokens[-1].clone())
+        ms = _churn_stats(mf, torch.stack(mt))
+        model["ident"] += ms["ident"]
+        model["churn"] += ms["churn"]
+
+    def summarise_side(d):
+        ident = float(np.mean(d["ident"]))
+        churn = float(np.mean(d["churn"]))
+        moved = [c for c, i in zip(d["churn"], d["ident"]) if not i]
+        return {
+            "ident": ident,
+            "churn": churn,
+            "churn_when_moved": float(np.mean(moved)) if moved else 0.0,
+            "n": len(d["ident"]),
+        }
+
+    return summarise_side(real), summarise_side(model)
 
 
 def main() -> None:
@@ -207,6 +256,8 @@ def main() -> None:
     p.add_argument("--horizon", type=int, default=32)
     p.add_argument("--still-rollouts", type=int, default=8)
     p.add_argument("--still-frames", type=int, default=60)
+    p.add_argument("--prefix", type=int, default=40,
+                   help="real-env steps replayed before holding the no-op")
     p.add_argument("--out", default="docs/BASELINES.md")
     a = p.parse_args()
 
@@ -271,12 +322,15 @@ def main() -> None:
 
     names = list(dck.get("action_names") or [])
     noop = names.index("-") if "-" in names else 0
-    sw = sample_windows(cfg["data"]["root"], C + 1, a.still_rollouts, seed=2)
-    ch_mean, ch_ident, ch_n = still_churn(engines["greedy"], sw, a.still_frames, noop)
-    print(f"hold-still churn ({a.still_rollouts} rollouts x {a.still_frames} frames, "
-          f"action '{names[noop] if names else noop}'): "
-          f"{ch_mean:.1f}/64 tokens change per frame, "
-          f"{100 * ch_ident:.1f}% of frames byte-identical to the previous one")
+    real_still, model_still = still_compare(
+        cfg, engines["greedy"], vq, device,
+        a.still_rollouts, a.still_frames, a.prefix, noop,
+    )
+    print(f"hold-still ({a.still_rollouts} starts x {a.still_frames} frames, "
+          f"action '{names[noop] if names else noop}'):")
+    for lbl, d in (("real game", real_still), ("model", model_still)):
+        print(f"  {lbl:10s} identical {100 * d['ident']:5.1f}%   churn {d['churn']:.2f}/64   "
+              f"when it moves {d['churn_when_moved']:.1f}/64   (n={d['n']})")
 
     print(f"\nclosed-loop: {a.rollouts} rollouts x {a.horizon} frames (greedy)")
     rw = sample_windows(cfg["data"]["root"], C + a.horizon, a.rollouts, seed=1)
@@ -373,38 +427,51 @@ def main() -> None:
         "per-token would be an enormous modelling win and would still leave the world "
         "shimmering half the time it should be frozen.",
         "",
-        f"### Churn under a held no-op ({ch_n} closed-loop frame pairs)",
+        f"### Churn under a held no-op, against the real game ({model_still['n']} frame pairs)",
         "",
         "The static row above is teacher-forced. This is the same question asked the way a "
-        "viewer meets it: the model consuming its own output for "
-        f"{a.still_frames} frames while the player holds the no-op action.",
+        f"viewer meets it: nothing pressed for {a.still_frames} frames, the model consuming "
+        "its own output. The real game is run through the same prefix, the same no-op and "
+        "the same tokenizer, because a churn number on its own supports either reading.",
         "",
-        "| measure | value |",
-        "|---|---|",
-        f"| mean tokens changed per frame | **{ch_mean:.1f} / 64** |",
-        f"| frames byte-identical to the previous one | **{100 * ch_ident:.1f}%** |",
+        "| | frames identical to previous | mean tokens changed | tokens changed *when* it moves |",
+        "|---|---|---|---|",
+        f"| real game | **{100 * real_still['ident']:.1f}%** | {real_still['churn']:.2f} / 64 | "
+        f"{real_still['churn_when_moved']:.1f} / 64 |",
+        f"| model | **{100 * model_still['ident']:.1f}%** | {model_still['churn']:.2f} / 64 | "
+        f"{model_still['churn_when_moved']:.1f} / 64 |",
+        "",
+        "**Two separate findings, and only the reference row separates them.**",
+        "",
+        f"*Frequency: the model is too twitchy, by {100 * (real_still['ident'] - model_still['ident']):.1f} "
+        "percentage points.* The real game holds a byte-identical frame "
+        f"{100 * real_still['ident']:.1f}% of the time under a held no-op; the model manages "
+        f"{100 * model_still['ident']:.1f}%. So the direction is confirmed: this is shimmer, "
+        "not sluggishness.",
+        "",
+        f"*Magnitude: the model is far too timid.* When the real game does change under a "
+        f"no-op it changes {real_still['churn_when_moved']:.0f} of 64 patches, a real event. "
+        f"When the model changes it moves {model_still['churn_when_moved']:.1f}. The model's "
+        f"overall churn ({model_still['churn']:.2f}) is therefore *lower* than the real "
+        f"game's ({real_still['churn']:.2f}) while being wrong more often: it substitutes "
+        "frequent small flicker for rare large events. Averaged churn alone would have "
+        "scored the model as calmer than reality and called that a win.",
         "",
         "**This is much better than the teacher-forced static row predicts, and the "
         "discrepancy is the interesting part.** Teacher-forced, the model reproduces a real "
-        f"previous frame's tokens exactly 0% of the time. Closed-loop, it reproduces its own "
-        f"previous tokens {100 * ch_ident:.1f}% of the time. Those are different tasks: "
-        "matching an external frame exactly is hard, while settling on a self-consistent "
-        "fixed point is something an autoregressive model falls into naturally, because its "
-        "context is already full of the frame it just produced.",
-        "",
-        f"So the practical artifact is milder than the static row alone suggests. Roughly "
-        f"{100 * (1 - ch_ident):.0f}% of held-still frames change at all, and those that do "
-        f"change about {ch_mean / max(1 - ch_ident, 1e-9):.0f} of 64 patches. That reads as an "
-        "occasional twitch in a small region rather than continuous shimmer over the whole "
-        "screen. Worth stating plainly: the earlier prediction of visible shimmer was drawn "
-        "from the teacher-forced number, and the closed-loop measurement walks it back.",
+        "previous frame's tokens exactly 0% of the time. Closed-loop, it reproduces its own "
+        f"previous tokens {100 * model_still['ident']:.1f}% of the time. Those are different "
+        "tasks: matching an external frame exactly is hard, while settling on a "
+        "self-consistent fixed point is something an autoregressive model falls into, because "
+        "its context is already full of the frame it just produced. The earlier prediction of "
+        "visible shimmer came from the teacher-forced number, and this walks it back.",
         "",
         "The combinatorial argument above is unaffected and still explains why *exact* "
         "stillness is not something the objective can be pushed into. It is simply that "
         "self-consistency, not accuracy, is doing the work here, and self-consistency is not "
-        "a property the loss is optimising either. It could get worse with a stronger model "
-        "that tracks the world more sharply instead of settling, which is a reason to re-run "
-        "this measurement on every rung of the scaling ladder rather than assume it holds.",
+        "a property the loss optimises either. It could get worse with a stronger model that "
+        "tracks the world sharply instead of settling, which is a reason to re-run this "
+        "measurement on every rung of the scaling ladder rather than assume it holds.",
         "",
         "These are the before-numbers for any later fix.",
         "",

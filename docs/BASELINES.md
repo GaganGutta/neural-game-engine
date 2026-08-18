@@ -50,20 +50,24 @@ So even **99% per-token agreement flickers on about half of all still frames**. 
 
 This is why the problem is unlikely to yield to capacity. Going from 0.723 to 0.99 per-token would be an enormous modelling win and would still leave the world shimmering half the time it should be frozen.
 
-### Churn under a held no-op (472 closed-loop frame pairs)
+### Churn under a held no-op, against the real game (413 frame pairs)
 
-The static row above is teacher-forced. This is the same question asked the way a viewer meets it: the model consuming its own output for 60 frames while the player holds the no-op action.
+The static row above is teacher-forced. This is the same question asked the way a viewer meets it: nothing pressed for 60 frames, the model consuming its own output. The real game is run through the same prefix, the same no-op and the same tokenizer, because a churn number on its own supports either reading.
 
-| measure | value |
-|---|---|
-| mean tokens changed per frame | **0.7 / 64** |
-| frames byte-identical to the previous one | **90.5%** |
+| | frames identical to previous | mean tokens changed | tokens changed *when* it moves |
+|---|---|---|---|
+| real game | **96.9%** | 1.03 / 64 | 32.7 / 64 |
+| model | **92.3%** | 0.32 / 64 | 4.2 / 64 |
 
-**This is much better than the teacher-forced static row predicts, and the discrepancy is the interesting part.** Teacher-forced, the model reproduces a real previous frame's tokens exactly 0% of the time. Closed-loop, it reproduces its own previous tokens 90.5% of the time. Those are different tasks: matching an external frame exactly is hard, while settling on a self-consistent fixed point is something an autoregressive model falls into naturally, because its context is already full of the frame it just produced.
+**Two separate findings, and only the reference row separates them.**
 
-So the practical artifact is milder than the static row alone suggests. Roughly 10% of held-still frames change at all, and those that do change about 8 of 64 patches. That reads as an occasional twitch in a small region rather than continuous shimmer over the whole screen. Worth stating plainly: the earlier prediction of visible shimmer was drawn from the teacher-forced number, and the closed-loop measurement walks it back.
+*Frequency: the model is too twitchy, by 4.6 percentage points.* The real game holds a byte-identical frame 96.9% of the time under a held no-op; the model manages 92.3%. So the direction is confirmed: this is shimmer, not sluggishness.
 
-The combinatorial argument above is unaffected and still explains why *exact* stillness is not something the objective can be pushed into. It is simply that self-consistency, not accuracy, is doing the work here, and self-consistency is not a property the loss is optimising either. It could get worse with a stronger model that tracks the world more sharply instead of settling, which is a reason to re-run this measurement on every rung of the scaling ladder rather than assume it holds.
+*Magnitude: the model is far too timid.* When the real game does change under a no-op it changes 33 of 64 patches, a real event. When the model changes it moves 4.2. The model's overall churn (0.32) is therefore *lower* than the real game's (1.03) while being wrong more often: it substitutes frequent small flicker for rare large events. Averaged churn alone would have scored the model as calmer than reality and called that a win.
+
+**This is much better than the teacher-forced static row predicts, and the discrepancy is the interesting part.** Teacher-forced, the model reproduces a real previous frame's tokens exactly 0% of the time. Closed-loop, it reproduces its own previous tokens 92.3% of the time. Those are different tasks: matching an external frame exactly is hard, while settling on a self-consistent fixed point is something an autoregressive model falls into, because its context is already full of the frame it just produced. The earlier prediction of visible shimmer came from the teacher-forced number, and this walks it back.
+
+The combinatorial argument above is unaffected and still explains why *exact* stillness is not something the objective can be pushed into. It is simply that self-consistency, not accuracy, is doing the work here, and self-consistency is not a property the loss optimises either. It could get worse with a stronger model that tracks the world sharply instead of settling, which is a reason to re-run this measurement on every rung of the scaling ladder rather than assume it holds.
 
 These are the before-numbers for any later fix.
 

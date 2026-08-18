@@ -4,26 +4,40 @@ Model: 2.0M params, context 6 frames, val loss 3.203, cold token accuracy 0.152.
 
 ## One-step, teacher-forced
 
-Real frames for context, one frame predicted, 200 held-out windows. This is the test that cannot be excused by drift.
+Real frames for context, one frame predicted, 1600 held-out windows. This is the test that cannot be excused by drift.
 
-| predictor | PSNR median | PSNR mean (cap-dependent) | token accuracy | beats copy on |
-|---|---|---|---|---|
-| copy-last-frame | 22.11 dB | 23.85 dB | 0.129 | -- |
-| model (2.0M), sampled | 23.65 dB | 23.42 dB | 0.140 | 80% of windows |
-| model (2.0M), greedy | **23.51 dB** | 23.49 dB | **0.177** | **80% of windows** |
-| tokenizer ceiling | 31.00 dB | 31.31 dB | 1.000 by construction | -- |
+Split by whether the two real frames are pixel-identical. On those, copy-last-frame is exactly right and PSNR is infinite, so any aggregate that mixes them is decided by where the infinity is clipped rather than by the models. Splitting removes the clipping choice from the comparison instead of managing it.
 
-**The model beats copy-last-frame by +1.40 dB on the median**, wins on 80% of individual windows, and sits 7.49 dB below the tokenizer ceiling.
+### Moving transitions (1555 windows, 97.2%)
 
-Read the median and the win rate, not the mean. 3.5% of consecutive frame pairs here are pixel-identical (a no-op action, or the agent pressed against a wall), and copy-last-frame is exactly right on every one of them. PSNR is infinite on those, so the mean depends entirely on where the infinity is clipped: at the 100 dB cap used here copy means 23.85 dB, and moving the cap moves that by roughly the identical fraction times the change. The median is unaffected while identical pairs stay a minority, and the win rate compares two numbers per window and cannot be clipped at all.
+No infinities here, so no cap exists and the mean is well defined.
 
-Headroom, measured on medians: the gap from copy-last-frame to the tokenizer ceiling is 8.89 dB, and the model captures 1.40 dB of it, or **16% of what was available**. Token accuracy is cap-free and agrees: 0.129 for copy against 0.177 for the model.
+| predictor | mean PSNR | median PSNR | token accuracy |
+|---|---|---|---|
+| copy-last-frame | 21.05 dB | 21.76 dB | 0.097 |
+| model (2.0M), greedy | **23.06 dB** | 23.85 dB | 0.152 |
+| model (2.0M), sampled | 23.05 dB | 23.92 dB | 0.125 |
+| tokenizer ceiling | 31.04 dB | 30.80 dB | 1.000 |
 
-Greedy and sampled decoding land 0.07 dB apart, which is nothing against the 7.5 dB frame-to-frame spread. Decoder temperature is not a meaningful lever at this model size.
+**The model beats copy-last-frame by 2.00 dB on moving transitions.** Headroom from copy to the tokenizer ceiling is 9.99 dB, so it captures **20% of what was available**. Token accuracy agrees and is cap-free by construction.
+
+### Static transitions (45 windows, 2.8%)
+
+Frames where nothing moved: a no-op action, or the agent pressed against a wall.
+
+| predictor | mean PSNR | median PSNR | token accuracy |
+|---|---|---|---|
+| copy-last-frame | exact (infinite) | exact | 1.000 |
+| model (2.0M), greedy | 28.80 dB | 28.97 dB | 0.723 |
+| tokenizer ceiling | 29.91 dB | | 1.000 |
+
+**The model does not beat copy-last-frame here, and cannot.** Copy is exact by construction; the model scores 28.80 dB. It reproduces the previous frame's tokens exactly on **0%** of static transitions.
+
+This is the number that predicts a demo-visible artifact. When the player stands still, the world should be frozen. Every static transition where the model emits different tokens is a frame that changes when it should not, which reads as shimmer. Note the ceiling is finite here too: anything that round-trips through the codebook cannot be pixel-exact, so perfect stillness is only reachable by emitting *identical tokens*, not by predicting well. That makes token-repeat rate, not PSNR, the metric to watch for this artifact.
 
 ## Closed-loop
 
-32 independent rollouts of 32 frames from held-out starts, averaged per step. The model consumes its own predictions; copy-last-frame degenerates to freezing on the last real frame. Reported per k and never averaged over k, because the trajectory is not monotonic and a single mean over it would describe nothing.
+32 independent rollouts of 32 frames from held-out starts, averaged per step. The model consumes its own predictions; copy-last-frame degenerates to freezing on the last real frame. Reported per k and never averaged over k, because the trajectory is not monotonic and a single mean over it would describe nothing. PSNR is clipped at 100 dB in this section only, for the rare case of a rollout that starts from a stalled agent.
 
 | k | copy (frozen) | model | tokenizer ceiling | model lead |
 |---|---|---|---|---|
@@ -36,6 +50,6 @@ Greedy and sampled decoding land 0.07 dB apart, which is nothing against the 7.5
 
 The model's lead over a frozen frame decays from +2.65 dB at k=1 to +0.15 dB at k=32. Past roughly k=16 it is not meaningfully better than showing the player a still image, which is the honest way to read the rollout GIF.
 
-The tokenizer ceiling is flat across k, as it must be: it re-encodes the true frame at every step and never compounds. It is drawn here as the horizontal line everything else is failing to reach.
+The tokenizer ceiling is flat across k, as it must be: it re-encodes the true frame at every step and never compounds.
 
 Regenerate with `python -m ngx.eval.baselines --config configs/small.yaml`.

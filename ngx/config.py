@@ -39,3 +39,27 @@ def run_dir(cfg: dict, stage: str) -> str:
     d = os.path.join(cfg.get("run_root", "runs"), cfg.get("name", "default"), stage)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def find_ckpt(cfg: dict, stage: str, filename: str) -> str:
+    """Prefer a locally trained checkpoint, fall back to the one in the repo.
+
+    Training writes to ``runs/<name>/<stage>/``. A fresh clone has no ``runs/``,
+    so ``checkpoints/<name>/`` carries the weights that make ``python play.py``
+    work without training anything first.
+
+    Every consumer of a checkpoint goes through this. Three of them used to
+    build the ``runs/`` path by hand, which meant a misplaced run directory
+    turned into a FileNotFoundError in the middle of a long job rather than a
+    graceful fall back to the shipped weights.
+    """
+    local = os.path.join(run_dir(cfg, stage), filename)
+    if os.path.exists(local):
+        return local
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shipped = os.path.join(root, "checkpoints", cfg.get("name", "default"), filename)
+    if os.path.exists(shipped):
+        return shipped
+    raise FileNotFoundError(
+        f"no checkpoint at {local} or {shipped}. Train it first -- see the README."
+    )

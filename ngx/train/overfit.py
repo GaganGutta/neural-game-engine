@@ -31,7 +31,7 @@ import os
 
 import torch
 
-from ..config import load_config, pick_device
+from ..config import find_ckpt, load_config, pick_device
 from ..data import TokenSequenceDataset
 from ..models.dynamics import DynamicsTransformer
 from ..models.vqvae import VQVAE
@@ -66,12 +66,7 @@ def main() -> None:
     device = pick_device(a.device)
     torch.manual_seed(0)
 
-    tc = load_ckpt(os.path.join("runs", cfg["name"], "tokenizer", "vqvae.pt"),
-                   map_location="cpu")["cfg"]["tokenizer"] if os.path.exists(
-        os.path.join("runs", cfg["name"], "tokenizer", "vqvae.pt")) else None
-    if tc is None:
-        from ..infer.load import find_ckpt
-        tc = load_ckpt(find_ckpt(cfg, "tokenizer", "vqvae.pt"), map_location="cpu")["cfg"]["tokenizer"]
+    tc = load_ckpt(find_ckpt(cfg, "tokenizer", "vqvae.pt"), map_location="cpu")["cfg"]["tokenizer"]
 
     dyn = cfg["dynamics"]
     ds = TokenSequenceDataset(cfg["data"]["root"], dyn["context"], "train")

@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from numpy.lib.format import open_memmap
 
-from ..config import load_config, pick_device, run_dir
+from ..config import find_ckpt, load_config, pick_device
 from ..models.vqvae import VQVAE
 from ..train.common import Timer, load_ckpt
 
@@ -67,7 +67,7 @@ def main() -> None:
     a = p.parse_args()
 
     cfg = load_config(a.config, a.set)
-    ckpt = a.ckpt or os.path.join(run_dir(cfg, "tokenizer"), "vqvae.pt")
+    ckpt = a.ckpt or find_ckpt(cfg, "tokenizer", "vqvae.pt")
     tokenize(cfg["data"]["root"], ckpt, pick_device(a.device), a.batch)
 
 

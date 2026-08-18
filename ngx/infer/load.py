@@ -10,34 +10,12 @@ import os
 
 import torch
 
-from ..config import pick_device, run_dir
+from ..config import find_ckpt, pick_device, run_dir
 from ..models.dynamics import DynamicsTransformer
 from ..models.vqvae import VQVAE
 from ..train.common import load_ckpt
 from .engine import EngineConfig, NeuralGameEngine
 from .memory import RetrievalMemory
-
-
-#: repo root, so shipped checkpoints resolve regardless of the working directory
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def find_ckpt(cfg: dict, stage: str, filename: str) -> str:
-    """Prefer a locally trained checkpoint, fall back to the one in the repo.
-
-    Training writes to ``runs/<name>/<stage>/``. A fresh clone has no ``runs/``,
-    so ``checkpoints/<name>/`` carries the weights that make ``python play.py``
-    work without training anything first.
-    """
-    local = os.path.join(run_dir(cfg, stage), filename)
-    if os.path.exists(local):
-        return local
-    shipped = os.path.join(_ROOT, "checkpoints", cfg.get("name", "default"), filename)
-    if os.path.exists(shipped):
-        return shipped
-    raise FileNotFoundError(
-        f"no checkpoint at {local} or {shipped}. Train it first -- see the README."
-    )
 
 
 def load_models(cfg: dict, device: torch.device):

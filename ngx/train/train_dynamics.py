@@ -25,7 +25,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ..config import load_config, pick_device, run_dir
+from ..config import find_ckpt, load_config, pick_device, run_dir
 from ..data import TokenSequenceDataset
 from ..models.dynamics import DynamicsTransformer
 from ..models.vqvae import VQVAE
@@ -43,7 +43,7 @@ from .common import (
 
 
 def build_tokenizer(cfg: dict, device: torch.device) -> tuple[VQVAE, dict]:
-    ck = load_ckpt(os.path.join(run_dir(cfg, "tokenizer"), "vqvae.pt"), map_location="cpu")
+    ck = load_ckpt(find_ckpt(cfg, "tokenizer", "vqvae.pt"), map_location="cpu")
     tc = ck["cfg"]["tokenizer"]
     vq = VQVAE(ch=tc["ch"], embed_dim=tc["embed_dim"], num_codes=tc["num_codes"],
                n_res=tc.get("n_res", 2))

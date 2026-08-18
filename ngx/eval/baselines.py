@@ -168,6 +168,35 @@ def closed_loop(engine, vq, windows, device, horizon: int):
     return model, frozen, ceil
 
 
+@torch.no_grad()
+def still_churn(engine, windows, horizon: int, action: int):
+    """Hold the no-op action in closed loop and watch how much still moves.
+
+    The teacher-forced static row predicts shimmer from single-step behaviour.
+    This measures it the way a viewer meets it: the model consuming its own
+    output while the player does nothing. Two numbers, because they answer
+    different halves of the question. Mean tokens changed per frame says how
+    much is moving; fraction of byte-identical frames says how often the
+    picture is genuinely still, which is the only thing a viewer registers as
+    "not shimmering".
+    """
+    C = engine.C
+    churn, identical = [], []
+    for frames, actions in windows:
+        engine.reset(frames[:C], actions[:C])
+        prev_tok = engine.tokens[-1].clone()
+        prev_frame = None
+        for k in range(horizon):
+            f = engine.step(action)
+            tok = engine.tokens[-1]
+            if k > 0:  # skip k=0: that one compares against a real frame, not a predicted one
+                churn.append(int((tok != prev_tok).sum()))
+                identical.append(bool(np.array_equal(f, prev_frame)))
+            prev_tok = tok.clone()
+            prev_frame = f.copy()
+    return float(np.mean(churn)), float(np.mean(identical)), len(churn)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--config", default="configs/small.yaml")
@@ -176,6 +205,8 @@ def main() -> None:
     p.add_argument("--windows", type=int, default=400, help="windows for the one-step test")
     p.add_argument("--rollouts", type=int, default=32, help="independent closed-loop rollouts")
     p.add_argument("--horizon", type=int, default=32)
+    p.add_argument("--still-rollouts", type=int, default=8)
+    p.add_argument("--still-frames", type=int, default=60)
     p.add_argument("--out", default="docs/BASELINES.md")
     a = p.parse_args()
 
@@ -238,6 +269,15 @@ def main() -> None:
     print(f"static subset: model {s_model_mean:.2f} dB, reproduces the previous frame's "
           f"tokens exactly on {100 * freeze:.0f}% of them")
 
+    names = list(dck.get("action_names") or [])
+    noop = names.index("-") if "-" in names else 0
+    sw = sample_windows(cfg["data"]["root"], C + 1, a.still_rollouts, seed=2)
+    ch_mean, ch_ident, ch_n = still_churn(engines["greedy"], sw, a.still_frames, noop)
+    print(f"hold-still churn ({a.still_rollouts} rollouts x {a.still_frames} frames, "
+          f"action '{names[noop] if names else noop}'): "
+          f"{ch_mean:.1f}/64 tokens change per frame, "
+          f"{100 * ch_ident:.1f}% of frames byte-identical to the previous one")
+
     print(f"\nclosed-loop: {a.rollouts} rollouts x {a.horizon} frames (greedy)")
     rw = sample_windows(cfg["data"]["root"], C + a.horizon, a.rollouts, seed=1)
     model, frozen, ceil = closed_loop(engines["greedy"], vq, rw, device, a.horizon)
@@ -289,7 +329,7 @@ def main() -> None:
         f"**{100 * captured / head:.0f}% of what was available**. Token accuracy agrees and is "
         "cap-free by construction.",
         "",
-        f"### Static transitions ({ns} windows, {100 * ns / n:.1f}%)",
+        f"### Static transitions (n = {ns} windows, {100 * ns / n:.1f}% of the sample)",
         "",
         "Frames where nothing moved: a no-op action, or the agent pressed against a wall.",
         "",
@@ -302,15 +342,83 @@ def main() -> None:
         "",
         f"**The model does not beat copy-last-frame here, and cannot.** Copy is exact by "
         f"construction; the model scores {s_model_mean:.2f} dB. It reproduces the previous "
-        f"frame's tokens exactly on **{100 * freeze:.0f}%** of static transitions.",
+        f"frame's tokens exactly on **{100 * freeze:.0f}%** of static transitions "
+        f"(n = {ns}).",
         "",
-        "This is the number that predicts a demo-visible artifact. When the player stands "
-        "still, the world should be frozen. Every static transition where the model emits "
-        "different tokens is a frame that changes when it should not, which reads as shimmer. "
-        "Note the ceiling is finite here too: anything that round-trips through the codebook "
-        "cannot be pixel-exact, so perfect stillness is only reachable by emitting *identical "
-        "tokens*, not by predicting well. That makes token-repeat rate, not PSNR, the metric "
-        "to watch for this artifact.",
+        f"Read those two numbers differently. At n = {ns} the 0% exact-repeat result is "
+        f"decisive: not one static frame in {ns} came back unchanged. The {s_model_mean:.2f} dB "
+        "mean is not; it is a small sample and should be treated as indicative only.",
+        "",
+        "### Why stillness is a hard constraint, not a quality problem",
+        "",
+        "A still frame requires **all 64 tokens correct simultaneously**. Treating per-token "
+        "accuracy as roughly independent, the probability of an unchanged frame is that "
+        "accuracy raised to the 64th power:",
+        "",
+        "| per-token agreement | P(frame unchanged) |",
+        "|---|---|",
+        "| 0.723 (this model) | ~0.000 |",
+        "| 0.99 | 0.52 |",
+        "| 0.995 | 0.73 |",
+        "| 0.999 | 0.94 |",
+        "",
+        "So even **99% per-token agreement flickers on about half of all still frames**. "
+        "Reliable stillness needs roughly 99.9%, and that is not a quality target that "
+        "cross-entropy has any incentive to reach. The loss is a mean over tokens: getting 46 "
+        "of 64 right is a perfectly acceptable value, and it is also a visibly broken frame. "
+        "The objective and the artifact are measuring different things, and no amount of "
+        "lowering the loss changes the exponent.",
+        "",
+        "This is why the problem is unlikely to yield to capacity. Going from 0.723 to 0.99 "
+        "per-token would be an enormous modelling win and would still leave the world "
+        "shimmering half the time it should be frozen.",
+        "",
+        f"### Churn under a held no-op ({ch_n} closed-loop frame pairs)",
+        "",
+        "The static row above is teacher-forced. This is the same question asked the way a "
+        "viewer meets it: the model consuming its own output for "
+        f"{a.still_frames} frames while the player holds the no-op action.",
+        "",
+        "| measure | value |",
+        "|---|---|",
+        f"| mean tokens changed per frame | **{ch_mean:.1f} / 64** |",
+        f"| frames byte-identical to the previous one | **{100 * ch_ident:.1f}%** |",
+        "",
+        "**This is much better than the teacher-forced static row predicts, and the "
+        "discrepancy is the interesting part.** Teacher-forced, the model reproduces a real "
+        f"previous frame's tokens exactly 0% of the time. Closed-loop, it reproduces its own "
+        f"previous tokens {100 * ch_ident:.1f}% of the time. Those are different tasks: "
+        "matching an external frame exactly is hard, while settling on a self-consistent "
+        "fixed point is something an autoregressive model falls into naturally, because its "
+        "context is already full of the frame it just produced.",
+        "",
+        f"So the practical artifact is milder than the static row alone suggests. Roughly "
+        f"{100 * (1 - ch_ident):.0f}% of held-still frames change at all, and those that do "
+        f"change about {ch_mean / max(1 - ch_ident, 1e-9):.0f} of 64 patches. That reads as an "
+        "occasional twitch in a small region rather than continuous shimmer over the whole "
+        "screen. Worth stating plainly: the earlier prediction of visible shimmer was drawn "
+        "from the teacher-forced number, and the closed-loop measurement walks it back.",
+        "",
+        "The combinatorial argument above is unaffected and still explains why *exact* "
+        "stillness is not something the objective can be pushed into. It is simply that "
+        "self-consistency, not accuracy, is doing the work here, and self-consistency is not "
+        "a property the loss is optimising either. It could get worse with a stronger model "
+        "that tracks the world more sharply instead of settling, which is a reason to re-run "
+        "this measurement on every rung of the scaling ladder rather than assume it holds.",
+        "",
+        "These are the before-numbers for any later fix.",
+        "",
+        "### Candidate fix, logged and not implemented",
+        "",
+        "A per-token **persistence gate**: a binary head predicting, for each of the 64 "
+        "positions, whether that token changes at all on this step, decoded *before* token "
+        "identity. Positions the gate marks unchanged are copied from the previous frame "
+        "verbatim and never sampled, so they cannot flicker; only the remainder go through "
+        "the usual decode. This attacks the exponent rather than the accuracy, because "
+        "stillness stops requiring 64 simultaneously-correct predictions and starts requiring "
+        "one well-calibrated binary decision per token, on a task where the prior is heavily "
+        "skewed and easy to learn. It also cuts decode work on quiet frames. Not implemented, "
+        "and not on the critical path for the scaling ladder.",
         "",
         "## Closed-loop",
         "",

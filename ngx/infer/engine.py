@@ -128,7 +128,39 @@ class NeuralGameEngine:
 
     @torch.no_grad()
     def step(self, action: int) -> np.ndarray:
-        """Advance the world by one frame under ``action``."""
+        """Advance the world by one frame under ``action``.
+
+        The context window scheme, in full, because this is the part that is
+        easy to get subtly wrong:
+
+        The engine holds exactly ``C`` frames of tokens and ``C`` actions, and
+        that never changes. ``tokens[i]`` is a frame; ``actions[i]`` is the
+        action applied *at* that frame, the one that turns frame ``i`` into
+        frame ``i+1``. So the newest action slot is always empty until a key is
+        pressed, which is why the first thing this method does is fill it.
+
+        After a frame is predicted the window slides by one: the oldest frame
+        falls off the front, the prediction is appended as the new newest
+        frame, and a placeholder action is appended behind it to be overwritten
+        on the next call. The model is therefore always looking at a window of
+        the same shape and the same absolute block positions it was trained on,
+        whether it is on frame 3 or frame 3000.
+
+        **Frame boundaries and the KV cache.** The cache built in
+        ``_logits_fn`` covers the whole context prefix and is reused across
+        every decoding pass *within* one frame, which is where the speedup
+        comes from. It is deliberately **not** carried across frames. Once the
+        window slides, every block has shifted position by one, and the model
+        uses absolute per-block position embeddings, so every cached key and
+        value is now attached to the wrong position. Reusing the cache across a
+        frame boundary would be silently wrong rather than merely stale: the
+        rollout would still look like Doom, which is exactly the kind of bug
+        this codebase is built to refuse. So the cache is rebuilt once per
+        frame, giving one prefix pass plus K cheap target passes instead of K
+        full passes. Carrying it across frames would need relative positions or
+        a ring buffer with rotated position ids, and neither is worth the
+        correctness risk at this context length.
+        """
         # The action the player just pressed belongs to the newest context
         # frame: it is what turns that frame into the one about to be drawn.
         self.actions[-1] = int(action)
@@ -211,9 +243,26 @@ class NeuralGameEngine:
     def _decode_maskgit(self, logits_fn) -> torch.Tensor:
         """Fill every masked slot each pass, keep the most confident ones.
 
+        **Decode ordering.** Raster order is an arbitrary choice inherited from
+        text, where left-to-right is the actual causal structure of the data. A
+        frame has no such order: the token in the bottom-right corner is not
+        "after" the one in the top-left in any meaningful sense. Committing in
+        raster order therefore forces the model to guess hard tokens early,
+        purely because of where they happen to sit in the grid.
+
+        MaskGIT orders by *confidence* instead. Every pass predicts all
+        remaining slots, and only the most confident ones are kept; the rest
+        are returned to the mask and re-predicted next pass, now conditioned on
+        what was just committed. Easy structure (flat walls, floor) locks in
+        first and constrains the hard parts (edges, doorways), which is the
+        opposite of what raster order does.
+
         The number left masked after pass ``i`` follows a cosine schedule from
-        ``L`` down to 0, so early passes commit only the tokens the model is
-        sure about and later passes fill in the rest given that scaffolding.
+        ``L`` down to 0: early passes commit few tokens, later passes commit
+        many, because by then the frame is mostly determined. This is why the
+        whole frame needs ~4 passes rather than 64, and it is only possible
+        because the target block attends bidirectionally, so a token committed
+        late can see every token committed early regardless of grid position.
         """
         K = max(int(self.cfg.maskgit_steps), 1)
         mask_id = self.model.mask_token

@@ -84,13 +84,22 @@ def main() -> None:
     frames, actions, _, _ = reference_trajectory(cfg, a.frames + C + 2, a.seed)
     n = min(a.frames, len(frames) - C)
 
+    # Seed with C real frames, then run closed-loop: every subsequent frame is
+    # predicted from the model's own previous predictions plus the real action.
     engine.reset(frames[:C], actions[:C])
-    out = []
+    out, psnrs = [], []
     for k in range(n):
         fake = engine.step(int(actions[C - 1 + k]))
+        psnrs.append(psnr_u8(frames[C + k][None], fake[None]))
         out.append(compose(frames[C + k], fake, a.scale, k + 1, n, engine.last_retrieved))
         if (k + 1) % 20 == 0:
             print(f"  {k + 1}/{n}")
+
+    ps = np.asarray(psnrs)
+    marks = [m for m in (1, 2, 4, 8, 16, 32, 64, 128) if m <= n]
+    print("\nPSNR vs ground truth, same actions into both:")
+    print("  " + "  ".join(f"k={m}:{ps[m - 1]:5.1f}" for m in marks))
+    print(f"  mean {ps.mean():.1f} dB   best {ps.max():.1f} dB   worst {ps.min():.1f} dB")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     # Quantise the palette: a README that takes ten seconds to load is a README

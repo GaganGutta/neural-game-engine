@@ -10,8 +10,10 @@ _vizdoom.ini
 _vizdoom/
 
 # Datasets and training runs are rebuilt by the pipeline, never committed.
-data/
-runs/
+# Anchored with a leading slash: a bare `data/` also matches `ngx/data/`, which
+# silently kept the entire data package out of the repo.
+/data/
+/runs/
 *.npy
 *.ckpt
 
@@ -22,3 +24,7 @@ runs/
 # ...but the README's demo media is part of the repo.
 !assets/*.gif
 !assets/*.png
+
+# one-off repair scripts and run logs
+repair2m.py
+*.log

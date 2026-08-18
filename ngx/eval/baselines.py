@@ -63,7 +63,15 @@ MARKS = (1, 2, 4, 8, 16, 32)
 
 #: PSNR between pixel-identical uint8 frames is infinite. Cap it so aggregates
 #: stay finite, and report how often the cap is hit rather than hiding it.
-PSNR_MAX = 60.0
+#:
+#: The value is arbitrary, and that matters: copy-last-frame is pixel-perfect on
+#: the few percent of steps where nothing moved, so its *mean* shifts by roughly
+#: (identical fraction) x (cap) whenever this constant changes. Anything the
+#: conclusion rests on is therefore reported cap-free -- the median, which is
+#: unaffected while identical pairs stay a minority, and the win rate, which
+#: only compares two numbers per window. 100 dB reads as "effectively
+#: identical" for 8-bit images without pretending to be infinity.
+PSNR_MAX = 100.0
 
 
 def psnr_capped(a: np.ndarray, b: np.ndarray) -> float:
@@ -139,6 +147,11 @@ def one_step(engines: dict, vq, windows, device):
         rows["ceiling"]["acc"].append(1.0)
     out = {k: {"psnr": summarise(v["psnr"]), "acc": summarise(v["acc"])} for k, v in rows.items()}
     out["identical_frac"] = identical / len(windows)
+    # Cap-free: a per-window comparison cannot be moved by where PSNR is clipped.
+    out["win_vs_copy"] = {
+        label: float(np.mean([m > c for m, c in zip(rows[label]["psnr"], rows["copy"]["psnr"])]))
+        for label in engines
+    }
     return out
 
 
@@ -214,9 +227,11 @@ def main() -> None:
     s = one["model (sampled)"]["psnr"]
     c = one["copy"]["psnr"]
     ceilv = one["ceiling"]["psnr"]
-    delta = g[0] - c[0]
-    gap = ceilv[0] - g[0]
-    verdict = "beats" if delta > 0 else "loses to"
+    # Medians and the win rate carry the conclusion; the mean is cap-dependent.
+    mdelta = g[1] - c[1]
+    mgap = ceilv[1] - g[1]
+    win = one["win_vs_copy"]["model (greedy)"]
+    verdict = "beats" if mdelta > 0 else "loses to"
     params = sum(q.numel() for q in dyn.parameters()) / 1e6
 
     lines = [
@@ -232,34 +247,41 @@ def main() -> None:
         f"Real frames for context, one frame predicted, {a.windows} held-out windows. "
         "This is the test that cannot be excused by drift.",
         "",
-        "| predictor | PSNR mean | PSNR median | token accuracy |",
-        "|---|---|---|---|",
-        f"| copy-last-frame | {c[0]:.2f} dB | {c[1]:.2f} dB | "
-        f"{one['copy']['acc'][0]:.3f} |",
-        f"| model ({params:.1f}M), sampled | {s[0]:.2f} dB | {s[1]:.2f} dB | "
-        f"{one['model (sampled)']['acc'][0]:.3f} |",
-        f"| model ({params:.1f}M), greedy | **{g[0]:.2f} dB** | **{g[1]:.2f} dB** | "
-        f"**{one['model (greedy)']['acc'][0]:.3f}** |",
-        f"| tokenizer ceiling | {ceilv[0]:.2f} dB | {ceilv[1]:.2f} dB | 1.000 by construction |",
+        "| predictor | PSNR median | PSNR mean (cap-dependent) | token accuracy | beats copy on |",
+        "|---|---|---|---|---|",
+        f"| copy-last-frame | {c[1]:.2f} dB | {c[0]:.2f} dB | "
+        f"{one['copy']['acc'][0]:.3f} | -- |",
+        f"| model ({params:.1f}M), sampled | {s[1]:.2f} dB | {s[0]:.2f} dB | "
+        f"{one['model (sampled)']['acc'][0]:.3f} | "
+        f"{100 * one['win_vs_copy']['model (sampled)']:.0f}% of windows |",
+        f"| model ({params:.1f}M), greedy | **{g[1]:.2f} dB** | {g[0]:.2f} dB | "
+        f"**{one['model (greedy)']['acc'][0]:.3f}** | "
+        f"**{100 * win:.0f}% of windows** |",
+        f"| tokenizer ceiling | {ceilv[1]:.2f} dB | {ceilv[0]:.2f} dB | "
+        "1.000 by construction | -- |",
         "",
-        f"**The model {verdict} copy-last-frame by {abs(delta):.2f} dB** greedily, and "
-        f"sits {gap:.2f} dB below the tokenizer ceiling.",
+        f"**The model {verdict} copy-last-frame by {mdelta:+.2f} dB on the median**, wins on "
+        f"{100 * win:.0f}% of individual windows, and sits {mgap:.2f} dB below the tokenizer "
+        "ceiling.",
         "",
-        f"The number that matters is the ratio. Total headroom between the trivial "
-        f"baseline and the tokenizer ceiling is {ceilv[0] - c[0]:.2f} dB. The model "
-        f"captures {abs(delta):.2f} dB of it, or "
-        f"**{100 * delta / max(ceilv[0] - c[0], 1e-9):.0f}% of what was available**. "
-        "Token accuracy tells the same story: "
-        f"{one['copy']['acc'][0]:.3f} for copy against "
+        f"Read the median and the win rate, not the mean. "
+        f"{one['identical_frac'] * 100:.1f}% of consecutive frame pairs here are pixel-identical "
+        "(a no-op action, or the agent pressed against a wall), and copy-last-frame is exactly "
+        "right on every one of them. PSNR is infinite on those, so the mean depends entirely on "
+        f"where the infinity is clipped: at the {PSNR_MAX:.0f} dB cap used here copy means "
+        f"{c[0]:.2f} dB, and moving the cap moves that by roughly the identical fraction times "
+        "the change. The median is unaffected while identical pairs stay a minority, and the "
+        "win rate compares two numbers per window and cannot be clipped at all.",
+        "",
+        f"Headroom, measured on medians: the gap from copy-last-frame to the tokenizer ceiling "
+        f"is {ceilv[1] - c[1]:.2f} dB, and the model captures {mdelta:.2f} dB of it, or "
+        f"**{100 * mdelta / max(ceilv[1] - c[1], 1e-9):.0f}% of what was available**. Token "
+        f"accuracy is cap-free and agrees: {one['copy']['acc'][0]:.3f} for copy against "
         f"{one['model (greedy)']['acc'][0]:.3f} for the model.",
         "",
         f"Greedy and sampled decoding land {abs(g[0] - s[0]):.2f} dB apart, which is "
         f"nothing against the {g[2]:.1f} dB frame-to-frame spread. Decoder temperature is "
         "not a meaningful lever at this model size.",
-        "",
-        f"{one['identical_frac'] * 100:.1f}% of consecutive frame pairs in the held-out set "
-        "are pixel-identical (no-op actions, or the agent pressed against a wall), which is "
-        "why PSNR is capped at 60 dB here and why the median is reported next to the mean.",
         "",
         "## Closed-loop",
         "",

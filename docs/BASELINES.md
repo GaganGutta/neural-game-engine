@@ -6,20 +6,20 @@ Model: 2.0M params, context 6 frames, val loss 3.203, cold token accuracy 0.152.
 
 Real frames for context, one frame predicted, 200 held-out windows. This is the test that cannot be excused by drift.
 
-| predictor | PSNR mean | PSNR median | token accuracy |
-|---|---|---|---|
-| copy-last-frame | 22.45 dB | 22.11 dB | 0.129 |
-| model (2.0M), sampled | 23.42 dB | 23.65 dB | 0.140 |
-| model (2.0M), greedy | **23.49 dB** | **23.51 dB** | **0.177** |
-| tokenizer ceiling | 31.31 dB | 31.00 dB | 1.000 by construction |
+| predictor | PSNR median | PSNR mean (cap-dependent) | token accuracy | beats copy on |
+|---|---|---|---|---|
+| copy-last-frame | 22.11 dB | 23.85 dB | 0.129 | -- |
+| model (2.0M), sampled | 23.65 dB | 23.42 dB | 0.140 | 80% of windows |
+| model (2.0M), greedy | **23.51 dB** | 23.49 dB | **0.177** | **80% of windows** |
+| tokenizer ceiling | 31.00 dB | 31.31 dB | 1.000 by construction | -- |
 
-**The model beats copy-last-frame by 1.04 dB** greedily, and sits 7.82 dB below the tokenizer ceiling.
+**The model beats copy-last-frame by +1.40 dB on the median**, wins on 80% of individual windows, and sits 7.49 dB below the tokenizer ceiling.
 
-The number that matters is the ratio. Total headroom between the trivial baseline and the tokenizer ceiling is 8.86 dB. The model captures 1.04 dB of it, or **12% of what was available**. Token accuracy tells the same story: 0.129 for copy against 0.177 for the model.
+Read the median and the win rate, not the mean. 3.5% of consecutive frame pairs here are pixel-identical (a no-op action, or the agent pressed against a wall), and copy-last-frame is exactly right on every one of them. PSNR is infinite on those, so the mean depends entirely on where the infinity is clipped: at the 100 dB cap used here copy means 23.85 dB, and moving the cap moves that by roughly the identical fraction times the change. The median is unaffected while identical pairs stay a minority, and the win rate compares two numbers per window and cannot be clipped at all.
+
+Headroom, measured on medians: the gap from copy-last-frame to the tokenizer ceiling is 8.89 dB, and the model captures 1.40 dB of it, or **16% of what was available**. Token accuracy is cap-free and agrees: 0.129 for copy against 0.177 for the model.
 
 Greedy and sampled decoding land 0.07 dB apart, which is nothing against the 7.5 dB frame-to-frame spread. Decoder temperature is not a meaningful lever at this model size.
-
-3.5% of consecutive frame pairs in the held-out set are pixel-identical (no-op actions, or the agent pressed against a wall), which is why PSNR is capped at 60 dB here and why the median is reported next to the mean.
 
 ## Closed-loop
 

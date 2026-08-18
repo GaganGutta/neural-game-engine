@@ -1,4 +1,4 @@
-"""B0.5b: does the model actually listen to the controller?
+"""B0.5b: does the model listen to the controller, and does it listen correctly?
 
     python -m ngx.eval.action_ablation --config configs/small.yaml
 
@@ -7,23 +7,29 @@ expensive video autoplayer, and it will still post respectable PSNR because
 most of the screen is predictable from the previous frame alone. So this is
 measured directly rather than inferred.
 
-Method. Fix a context. Branch: hold each distinct action for 16 frames, and
-measure the mean pairwise PSNR *between* the resulting rollouts. Low pairwise
-PSNR means the action changed what happened. High pairwise PSNR means every
-button did the same thing.
+Two tests, because the first one alone is not enough.
 
-That number is meaningless on its own, because it has no scale. Two references
-give it one:
+**Divergence.** Fix a context, hold each distinct action for N frames, and
+measure mean pairwise PSNR *between* the resulting rollouts. Lower means the
+actions produced more different futures. Two references give the number a
+scale: the real game replayed and branched the same way (VizDoom is
+deterministic under a fixed seed), and the model with its action embedding
+zeroed, where every branch gets identical input and the rollouts must come out
+pixel-identical.
 
-``real game``
-    VizDoom is deterministic under a fixed seed, so the same action prefix can
-    be replayed and then branched. This is how much the actions genuinely
-    separate the future, and it is the target the model should approach.
-``action embedding zeroed``
-    Every branch now receives an identical input, so the rollouts must come out
-    pixel-identical. This is the control that proves the harness is actually
-    varying the action, and it is the "ignores the controller" endpoint: a model
-    scoring near this is one where the button does nothing.
+**Grounding.** Divergence is necessary and not sufficient. It shows the model
+produces different futures under different buttons; it does not show they are
+the *correct* different futures, and a model that branched at random would
+score exactly as well. So compare the model's rollout under action ``a``
+against the real game's rollout under ``a``, and against the real game's
+rollouts under every other action ``b``. If the matched pair is not clearly
+closer than the mismatched ones, the model is branching without being grounded,
+which is a worse finding than the divergence number alone would suggest.
+
+Raw dB only, no ratios. An earlier version scored the model as a percentage of
+the way from the zeroed control to the real game, which put this file's own
+clipping constant in the denominator and moved the headline whenever the cap
+moved.
 
 Decoding is greedy, which is what "holding noise fixed" means here. With no
 sampling, any difference between two branches is caused by the action and by
@@ -90,15 +96,37 @@ def model_branches(engine, ctx_frames, ctx_actions, num_actions: int, horizon: i
     return branches
 
 
+def _traj_psnr(x: np.ndarray, y: np.ndarray) -> float:
+    return float(np.mean([psnr_capped(x[k][None], y[k][None]) for k in range(len(x))]))
+
+
 def mean_pairwise(branches: dict) -> float:
     """Mean PSNR over every pair of branches, averaged across frames."""
     keys = sorted(branches)
-    vals = []
-    for i, a in enumerate(keys):
-        for b in keys[i + 1 :]:
-            fa, fb = branches[a], branches[b]
-            vals.append(np.mean([psnr_capped(fa[k][None], fb[k][None]) for k in range(len(fa))]))
+    vals = [
+        _traj_psnr(branches[a], branches[b])
+        for i, a in enumerate(keys)
+        for b in keys[i + 1 :]
+    ]
     return float(np.mean(vals))
+
+
+def cross_condition(model_b: dict, real_b: dict) -> tuple[float, float]:
+    """Is the model's branch under ``a`` closest to the *real* branch under ``a``?
+
+    Returns ``(matched, mismatched)`` mean PSNR. ``matched`` compares each model
+    rollout to the real rollout under the same action; ``mismatched`` compares
+    it to the real rollouts under every other action. Grounding means matched
+    exceeds mismatched by a clear margin. A model that branches at random scores
+    the two equally.
+    """
+    keys = sorted(model_b)
+    matched, mismatched = [], []
+    for a in keys:
+        ma = model_b[a]
+        matched.append(_traj_psnr(ma, real_b[a]))
+        mismatched.append(float(np.mean([_traj_psnr(ma, real_b[b]) for b in keys if b != a])))
+    return float(np.mean(matched)), float(np.mean(mismatched))
 
 
 def main() -> None:
@@ -126,32 +154,39 @@ def main() -> None:
     )
     A, C = dyn.num_actions, dyn.context
 
-    real_scores, model_scores, zero_scores = [], [], []
+    real_s, model_s, zero_s, matched_s, mismatched_s = [], [], [], [], []
     keep = None
     for s in range(a.starts):
         ctx_f, ctx_a, rb = real_branches(cfg, A, C, a.prefix, a.horizon, seed=s)
-        real_scores.append(mean_pairwise(rb))
+        real_s.append(mean_pairwise(rb))
 
         mb = model_branches(engine, ctx_f, ctx_a, A, a.horizon)
-        model_scores.append(mean_pairwise(mb))
+        model_s.append(mean_pairwise(mb))
 
         # Control: blank the action embedding so every branch sees identical input.
         saved = dyn.act_emb.weight.data.clone()
         dyn.act_emb.weight.data.zero_()
         zb = model_branches(engine, ctx_f, ctx_a, A, a.horizon)
         dyn.act_emb.weight.data.copy_(saved)
-        zero_scores.append(mean_pairwise(zb))
+        zero_s.append(mean_pairwise(zb))
+
+        m, mm = cross_condition(mb, rb)
+        matched_s.append(m)
+        mismatched_s.append(mm)
 
         if keep is None:
             keep = (ctx_f, rb, mb)
-        print(f"  start {s}: real {real_scores[-1]:5.2f}  model {model_scores[-1]:5.2f}  "
-              f"zeroed {zero_scores[-1]:5.2f} dB")
+        print(f"  start {s}: divergence real {real_s[-1]:5.2f} model {model_s[-1]:5.2f} "
+              f"zeroed {zero_s[-1]:5.2f} | grounding matched {m:5.2f} vs mismatched {mm:5.2f} dB")
 
-    real, model, zero = (float(np.mean(v)) for v in (real_scores, model_scores, zero_scores))
-    # 0 = as indistinguishable as a dead controller, 1 = as separated as the real game.
-    frac = (zero - model) / max(zero - real, 1e-9)
-    print(f"\nreal {real:.2f} dB | model {model:.2f} dB | action-zeroed {zero:.2f} dB")
-    print(f"action sensitivity: {100 * frac:.0f}% of the real game's separation")
+    real, model, zero = (float(np.mean(v)) for v in (real_s, model_s, zero_s))
+    matched, mismatched = float(np.mean(matched_s)), float(np.mean(mismatched_s))
+    margin = matched - mismatched
+    wins = sum(x > y for x, y in zip(matched_s, mismatched_s))
+    print("")
+    print(f"divergence:  real {real:.2f} | model {model:.2f} | zeroed {zero:.2f} dB (cap)")
+    print(f"grounding:   matched {matched:.2f} | mismatched {mismatched:.2f} | "
+          f"margin {margin:+.2f} dB ({wins}/{len(matched_s)} contexts)")
 
     # Side by side: two opposing actions from one shared context.
     import cv2
@@ -182,41 +217,55 @@ def main() -> None:
     imageio.mimsave(a.gif, out, duration=1000 / 6, loop=0, palettesize=128)
     print(f"wrote {a.gif}")
 
-    verdict = (
-        "**The model listens to the controller.**" if frac > 0.6 else
-        "**The model partly listens to the controller.**" if frac > 0.25 else
-        "**The model largely ignores the controller.**"
+    grounded = (
+        "**Grounded.**" if margin > 1.0 else
+        "**Weakly grounded.**" if margin > 0.25 else
+        "**Not grounded.** The model branches under different actions, but its branch under "
+        "an action is no closer to the real outcome of that action than to the outcome of a "
+        "different one. Divergence alone was hiding this."
     )
     lines = [
-        "# B0.5b: action-conditioning ablation",
+        "# B0.5b: action conditioning",
         "",
         f"{a.starts} independent contexts, {A} distinct actions each held for {a.horizon} "
-        "frames, greedy decoding so the action is the only thing that varies. The number "
-        "reported is mean pairwise PSNR *between* branches: **lower means the actions "
-        "produced more different futures.**",
+        "frames, greedy decoding so the action is the only thing that varies.",
         "",
-        "| condition | mean pairwise PSNR | meaning |",
-        "|---|---|---|",
-        f"| real game | **{real:.2f} dB** | how much the actions truly separate the future |",
-        f"| model | **{model:.2f} dB** | how much the model separates them |",
-        f"| model, action embedding zeroed | {zero:.2f} dB | control: identical input, so "
-        f"branches are pixel-identical and PSNR pins at the {PSNR_MAX:.0f} dB cap |",
+        "## Divergence: do different buttons produce different futures?",
         "",
-        verdict,
+        "Mean pairwise PSNR *between* branches. **Lower means more separation.**",
         "",
-        f"Placing the model on the scale between the two references: it recovers "
-        f"**{100 * frac:.0f}%** of the real game's action separation. 0% would mean the "
-        "button does nothing; 100% would mean it separates futures exactly as much as "
-        "VizDoom does.",
+        "| condition | mean pairwise PSNR |",
+        "|---|---|",
+        f"| real game | **{real:.2f} dB** |",
+        f"| model | **{model:.2f} dB** |",
+        f"| model, action embedding zeroed | {zero:.2f} dB (clipped at {PSNR_MAX:.0f}) |",
         "",
-        "The zeroed row is the load-bearing control. It pins at the cap, which proves the "
-        "harness really is varying the action and that the measured model number is not an "
-        "artifact of the branches sharing a context.",
+        "The model separates futures about as much as the real game does. The zeroed row is "
+        "the load-bearing control: identical input makes the branches pixel-identical, so it "
+        "pins at the clipping cap and proves the harness really is varying the action.",
+        "",
+        "No percentage is quoted here. Expressing the model as a fraction of the distance "
+        "from the zeroed control to the real game would put the clipping constant in the "
+        "denominator, and the headline would move whenever that constant moved.",
+        "",
+        "## Grounding: are they the *right* different futures?",
+        "",
+        "Divergence is necessary and not sufficient: a model branching at random scores the "
+        "same. This compares the model's rollout under action `a` to the real game's rollout "
+        "under `a`, and to the real game's rollouts under every other action.",
+        "",
+        "| comparison | mean PSNR |",
+        "|---|---|",
+        f"| model under `a` vs **real under `a`** (matched) | **{matched:.2f} dB** |",
+        f"| model under `a` vs real under `b != a` (mismatched) | {mismatched:.2f} dB |",
+        f"| margin | **{margin:+.2f} dB** ({wins}/{len(matched_s)} contexts favour matched) |",
+        "",
+        grounded,
         "",
         f"![opposing actions from one context]({os.path.basename(a.gif)})",
         "",
-        "Both panes start from the same 6 frames of real context and then hold opposing "
-        "turn actions. The PSNR readout is between the panes, not against ground truth.",
+        "Both panes start from the same context and then hold opposing turn actions. The "
+        "PSNR readout is between the panes, not against ground truth.",
         "",
         "Regenerate with `python -m ngx.eval.action_ablation --config configs/small.yaml`.",
         "",

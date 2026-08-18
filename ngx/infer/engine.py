@@ -39,6 +39,10 @@ class EngineConfig:
     temperature: float = 1.0
     top_k: int = 50
     use_cache: bool = True
+    # Carry the prefix cache across frame boundaries. Requires rope positions;
+    # ignored otherwise. See NeuralGameEngine.step for what this does and does
+    # not preserve.
+    carry_cache: bool = True
     dtype: str = "fp32"            # 'fp32' | 'bf16' | 'fp16'
     compile: bool = False
     int8: bool = False
@@ -99,6 +103,19 @@ class NeuralGameEngine:
         self._frame = np.zeros((64, 64, 3), np.uint8)
         self.last_retrieved = 0
 
+        # Carrying needs rope, and it needs the window to slide by exactly one
+        # block per step. Retrieval memory swaps arbitrary context blocks, which
+        # breaks that invariant, so the two are mutually exclusive.
+        self._carry = (
+            self.cfg.carry_cache
+            and self.cfg.use_cache
+            and getattr(self.model, "pos_encoding", "absolute") == "rope"
+            and memory is None
+            and self.C > 1
+        )
+        self._cache = None   # complete blocks for frames t0 .. t0+C-2
+        self._t0 = 0         # absolute frame index of the oldest cached block
+
     # -- lifecycle ----------------------------------------------------------
     @torch.no_grad()
     def reset(self, frames: np.ndarray, actions: np.ndarray | None = None) -> np.ndarray:
@@ -123,6 +140,7 @@ class NeuralGameEngine:
         )
         if self.memory is not None:
             self.memory.reset()
+        self._cache, self._t0 = None, 0
         self._frame = np.asarray(frames[-1], dtype=np.uint8)
         return self._frame
 
@@ -171,7 +189,15 @@ class NeuralGameEngine:
             tokens, actions, self.last_retrieved = self.memory.augment(tokens, actions)
 
         with _autocast(self.device, self.cfg.dtype):
-            new_tokens = self._predict_frame(tokens, actions)
+            new_tokens, full = self._predict_frame(tokens, actions)
+
+        if self._carry and full is not None:
+            # Drop the oldest block and advance the origin: what remains is
+            # exactly the complete blocks of the next window, so the next step
+            # only has to encode the one frame it just produced.
+            step = self.L + 1
+            self._cache = [(k[:, :, step:], v[:, :, step:]) for k, v in full]
+            self._t0 += 1
 
         if self.memory is not None:
             self.memory.write(self.tokens[-1], int(action))
@@ -202,8 +228,20 @@ class NeuralGameEngine:
         """
         prefix_tok, prefix_act = tokens[None], actions[None]
         if self.cfg.use_cache:
-            cache = self._encode_prefix(prefix_tok, prefix_act)
-            return lambda cur: self._decode_logits(cache, cur[None], self.C)[0]
+            C, t0 = self.C, (self._t0 if self._carry else 0)
+            if self._carry:
+                # Blocks t0 .. t0+C-2 are unchanged from last step and are
+                # already cached; only the newest frame, whose action just
+                # arrived, still needs encoding.
+                if self._cache is None:
+                    self._cache = self._encode_prefix(
+                        prefix_tok[:, : C - 1], prefix_act[:, : C - 1], t0)
+                cache = self.model.extend_prefix(
+                    self._cache, prefix_tok[:, C - 1 :], prefix_act[:, C - 1 :], t0 + C - 1)
+            else:
+                cache = self._encode_prefix(prefix_tok, prefix_act, t0)
+            frame_index = t0 + C
+            return cache, lambda cur: self._decode_logits(cache, cur[None], frame_index)[0]
 
         def uncached(cur: torch.Tensor) -> torch.Tensor:
             full = torch.cat([prefix_tok, cur[None, None]], dim=1)
@@ -212,7 +250,7 @@ class NeuralGameEngine:
             mask[:, -1] = cur == self.model.mask_token
             return self._forward(full, act, mask)[0, -1]
 
-        return uncached
+        return None, uncached
 
     def _sample(self, logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample a token per position; also return the sampled token's prob."""
@@ -226,11 +264,12 @@ class NeuralGameEngine:
             tok = torch.multinomial(probs, 1).squeeze(-1)
         return tok, probs.gather(-1, tok[:, None]).squeeze(-1)
 
-    def _predict_frame(self, tokens: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        logits_fn = self._logits_fn(tokens, actions)
-        if self.cfg.decode == "raster":
-            return self._decode_raster(logits_fn)
-        return self._decode_maskgit(logits_fn)
+    def _predict_frame(self, tokens: torch.Tensor, actions: torch.Tensor):
+        """Returns ``(new_tokens, full_cache)``; the cache is None when uncached."""
+        cache, logits_fn = self._logits_fn(tokens, actions)
+        out = (self._decode_raster(logits_fn) if self.cfg.decode == "raster"
+               else self._decode_maskgit(logits_fn))
+        return out, cache
 
     def _decode_raster(self, logits_fn) -> torch.Tensor:
         """One forward pass per token, left to right. The AR baseline."""

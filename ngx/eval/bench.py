@@ -42,13 +42,18 @@ from ..infer.quantize import weight_bytes
 # found so far. int8 forces fp32 back on: PyTorch's dynamic quantised kernels
 # take float activations, and feeding them autocast output raises outright.
 STEPS: list[tuple[str, dict]] = [
-    ("raster AR, no KV cache", dict(decode="raster", use_cache=False, dtype="fp32")),
-    ("+ KV cache", dict(use_cache=True)),
+    ("raster AR, no KV cache", dict(decode="raster", use_cache=False, dtype="fp32",
+                                    carry_cache=False)),
+    ("+ KV cache (within frame)", dict(use_cache=True)),
     ("+ MaskGIT parallel decode", dict(decode="maskgit")),
+    ("+ carry KV cache across frames", dict(carry_cache=True)),
     ("+ bf16 autocast", dict(dtype="bf16")),
     ("+ torch.compile", dict(compile=True)),
     ("+ int8 dynamic quant", dict(int8=True, dtype="fp32")),
 ]
+
+#: rows that cannot run unless the checkpoint uses rotary positions
+NEEDS_ROPE = {"+ carry KV cache across frames"}
 
 
 def _rss_mb() -> float | None:
@@ -156,6 +161,11 @@ def main() -> None:
     rows, best_rollout, best_cfg, best_fps = [], None, dict(cur), 0.0
     for label, delta in STEPS:
         trial = {**best_cfg, **delta}
+        if label in NEEDS_ROPE and getattr(dyn, "pos_encoding", "absolute") != "rope":
+            msg = f"checkpoint uses {getattr(dyn, 'pos_encoding', 'absolute')} positions"
+            print(f"  {label:32s} unavailable: {msg}")
+            rows.append({"label": label, "error": msg})
+            continue
         try:
             r = run_row(vq, dyn, EngineConfig(**trial), device, seeds, acts, plan,
                         a.frames, a.warmup, a.budget)

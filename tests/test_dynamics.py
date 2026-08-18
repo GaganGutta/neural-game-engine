@@ -28,36 +28,90 @@ NUM_CODES = 32
 NUM_ACTIONS = 6
 
 
-def _model(seed: int = 0) -> DynamicsTransformer:
+def _model(seed: int = 0, pos_encoding: str = "rope") -> DynamicsTransformer:
     torch.manual_seed(seed)
     m = DynamicsTransformer(
         num_codes=NUM_CODES, num_actions=NUM_ACTIONS, tokens_per_frame=L,
-        context=CONTEXT, d_model=64, n_layers=3, n_heads=4,
+        context=CONTEXT, d_model=64, n_layers=3, n_heads=4, pos_encoding=pos_encoding,
     )
     return m.eval()
 
 
 def test_cached_inference_matches_training_forward():
+    for pos in ("rope", "absolute"):
+        m = _model(pos_encoding=pos)
+        B, T = 2, CONTEXT + 1
+        torch.manual_seed(1)
+        tokens = torch.randint(0, NUM_CODES, (B, T, L))
+        actions = torch.randint(0, NUM_ACTIONS, (B, T))
+
+        # Fully mask the final target frame; leave earlier targets fully masked
+        # too so the comparison isolates the last block.
+        mask = torch.ones(B, T - 1, L, dtype=torch.bool)
+        with torch.no_grad():
+            train_logits = m(tokens, actions, mask)[:, -1]  # (B, L, V)
+            cache = m.encode_prefix(tokens[:, : T - 1], actions[:, : T - 1])
+            target = torch.full((B, L), m.mask_token, dtype=torch.long)
+            infer_logits = m.decode_logits(cache, target, frame_index=T - 1)
+
+        err = (train_logits - infer_logits).abs().max().item()
+        assert err < 1e-4, f"[{pos}] train/infer logits diverge by {err}"
+
+
+def test_carried_cache_is_exact_when_nothing_is_evicted():
+    """Extending a rope cache by one block equals recomputing the whole prefix.
+
+    This is the property rope buys. Under absolute positions every block's
+    embedding is indexed by its slot in the window, so a slide invalidates the
+    entire cache; under rope a cached key keeps its own absolute rotation and a
+    later query only ever sees the relative offset.
+    """
     m = _model()
-    B, T = 2, CONTEXT + 1
-    torch.manual_seed(1)
-    tokens = torch.randint(0, NUM_CODES, (B, T, L))
-    actions = torch.randint(0, NUM_ACTIONS, (B, T))
-
-    # Fully mask the final target frame; leave earlier targets fully masked too
-    # so the comparison isolates the last block.
-    mask = torch.ones(B, T - 1, L, dtype=torch.bool)
+    torch.manual_seed(4)
+    tokens = torch.randint(0, NUM_CODES, (1, CONTEXT + 1, L))
+    actions = torch.randint(0, NUM_ACTIONS, (1, CONTEXT + 1))
     with torch.no_grad():
-        train_logits = m(tokens, actions, mask)[:, -1]  # (B, L, V)
+        part = m.encode_prefix(tokens[:, :CONTEXT], actions[:, :CONTEXT], base=0)
+        carried = m.extend_prefix(part, tokens[:, CONTEXT:], actions[:, CONTEXT:], base=CONTEXT)
+        fresh = m.encode_prefix(tokens, actions, base=0)
 
-    # Inference path: prefix is frames 0..T-2 with their actions.
+        kerr = max((a[0] - b[0]).abs().max().item() for a, b in zip(carried, fresh))
+        verr = max((a[1] - b[1]).abs().max().item() for a, b in zip(carried, fresh))
+        target = torch.full((1, L), m.mask_token, dtype=torch.long)
+        lerr = (m.decode_logits(carried, target, CONTEXT + 1)
+                - m.decode_logits(fresh, target, CONTEXT + 1)).abs().max().item()
+    assert kerr < 1e-4 and verr < 1e-4, f"cached K/V drift: {kerr}, {verr}"
+    assert lerr < 1e-4, f"carried-cache logits diverge by {lerr}"
+
+
+def test_eviction_is_an_approximation_and_a_small_one():
+    """Dropping the oldest block is *not* exact, and this pins how inexact.
+
+    A retained block's cached representation was computed while the evicted
+    block was still visible; a fresh window would give it no such history. No
+    position encoding fixes that -- it is a property of block-causal attention,
+    not of rope. So the test asserts what actually matters at play time: the
+    approximation must not change which token is chosen.
+    """
+    m = _model()
+    torch.manual_seed(5)
+    tokens = torch.randint(0, NUM_CODES, (1, CONTEXT + 1, L))
+    actions = torch.randint(0, NUM_ACTIONS, (1, CONTEXT + 1))
+    step = L + 1
     with torch.no_grad():
-        cache = m.encode_prefix(tokens[:, : T - 1], actions[:, : T - 1])
-        target = torch.full((B, L), m.mask_token, dtype=torch.long)
-        infer_logits = m.decode_logits(cache, target, frame_index=T - 1)
+        part = m.encode_prefix(tokens[:, :CONTEXT], actions[:, :CONTEXT], base=0)
+        carried = m.extend_prefix(part, tokens[:, CONTEXT:], actions[:, CONTEXT:], base=CONTEXT)
+        evicted = [(k[:, :, step:], v[:, :, step:]) for k, v in carried]
+        fresh = m.encode_prefix(tokens[:, 1:], actions[:, 1:], base=1)
 
-    err = (train_logits - infer_logits).abs().max().item()
-    assert err < 1e-4, f"train/infer logits diverge by {err}"
+        target = torch.full((1, L), m.mask_token, dtype=torch.long)
+        le = m.decode_logits(evicted, target, CONTEXT + 1)
+        lr = m.decode_logits(fresh, target, CONTEXT + 1)
+
+    rel = (le - lr).abs().max().item() / lr.std().item()
+    agree = (le.argmax(-1) == lr.argmax(-1)).float().mean().item()
+    assert agree == 1.0, f"eviction changed {100 * (1 - agree):.1f}% of argmax tokens"
+    assert rel < 0.1, f"eviction perturbs logits by {rel:.3f} of a standard deviation"
 
 
 def test_future_frames_cannot_leak_into_a_prediction():

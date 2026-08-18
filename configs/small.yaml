@@ -35,6 +35,9 @@ dynamics:
   n_layers: 4
   n_heads: 8
   dropout: 0.0
+  # 'rope' lets the KV cache survive a frame boundary and makes longer
+  # context affordable. 'absolute' is what the shipped checkpoint used.
+  pos_encoding: rope
   batch_size: 16
   steps: 6500
   lr: 6.0e-4          # short schedule, so push the LR harder than the usual 3e-4

@@ -122,6 +122,7 @@ def main() -> None:
         context=ctx,
         d_model=dyn["d_model"], n_layers=dyn["n_layers"], n_heads=dyn["n_heads"],
         dropout=dyn.get("dropout", 0.0),
+        pos_encoding=dyn.get("pos_encoding", "rope"),
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=dyn["lr"], betas=(0.9, 0.95), weight_decay=0.01)

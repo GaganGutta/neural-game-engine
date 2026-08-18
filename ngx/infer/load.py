@@ -35,6 +35,10 @@ def load_models(cfg: dict, device: torch.device):
         num_codes=tc["num_codes"], num_actions=num_actions,
         tokens_per_frame=vq.tokens_per_frame, context=dc["context"],
         d_model=dc["d_model"], n_layers=dc["n_layers"], n_heads=dc["n_heads"],
+        # Checkpoints written before rope existed have no such key and are
+        # absolute. Defaulting the other way would load their weights into a
+        # model that reads positions differently and quietly produce nonsense.
+        pos_encoding=dc.get("pos_encoding", "absolute"),
     )
     dyn.load_state_dict(dck["model"])
     return vq.to(device).eval(), dyn.to(device).eval(), dck

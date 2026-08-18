@@ -50,15 +50,39 @@ def test_step_returns_a_frame_and_slides_the_window():
 
 
 def test_kv_cache_is_numerically_exact():
-    """The cached path is an optimisation, not an approximation."""
+    """Within-frame caching is an optimisation, not an approximation.
+
+    Carrying across frames is disabled here on purpose: that path evicts the
+    oldest block and is a measured approximation, covered separately in
+    tests/test_dynamics.py. This test is about the claim the benchmark table
+    makes, which is that caching the prefix inside one frame changes nothing.
+    """
     seeds = _seed_frames()
     outs = []
     for use_cache in (False, True):
         torch.manual_seed(7)
-        e = _engine(use_cache=use_cache, decode="maskgit", maskgit_steps=4)
+        e = _engine(use_cache=use_cache, carry_cache=False, decode="maskgit", maskgit_steps=4)
         e.reset(seeds)
         outs.append(np.stack([e.step(a) for a in (3, 1, 3, 2)]))
     assert np.array_equal(outs[0], outs[1]), "KV cache changed the output"
+
+
+def test_carrying_the_cache_across_frames_does_not_change_the_rollout():
+    """End-to-end check that the eviction approximation is invisible in play.
+
+    Greedy decoding, so any divergence would show up as a different frame
+    rather than as sampling noise.
+    """
+    seeds = _seed_frames()
+    outs = []
+    for carry in (False, True):
+        torch.manual_seed(11)
+        e = _engine(carry_cache=carry, decode="maskgit", maskgit_steps=4)
+        assert e._carry == carry, "carry flag did not take effect"
+        e.reset(seeds)
+        outs.append(np.stack([e.step(a) for a in (3, 3, 1, 3, 2, 3, 3, 1)]))
+    same = float(np.mean(outs[0] == outs[1]))
+    assert same > 0.999, f"carrying changed {100 * (1 - same):.2f}% of pixels"
 
 
 def test_decoders_emit_only_real_codebook_entries():

@@ -3,7 +3,7 @@
 - device: `cpu` (AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD)
 - torch: `2.10.0+cpu`, platform: `Windows-11-10.0.26200-SP0`
 - model: 2.0M params, context 6 frames, 64 tokens/frame
-- greedy decoding, 3 warmup frames discarded, up to 25 timed frames per row (cap 100s)
+- greedy decoding, 2 warmup frames discarded, up to 12 timed frames per row (cap 60s)
 
 Each row applies one change on top of the fastest configuration so far. A change that measures slower is reverted, and says so.
 
@@ -11,12 +11,13 @@ Each row applies one change on top of the fastest configuration so far. A change
 
 | step | fps | ms/frame | passes/frame | vs. row 1 | weights | peak mem | output delta | |
 |---|---|---|---|---|---|---|---|---|
-| raster AR, no KV cache | **0.75** | 1328.3 | 64 | 1.0x | 8.0 MB | 289 MB | identical | kept |
-| + KV cache | **4.68** | 213.8 | 64 | 6.2x | 8.0 MB | 291 MB | identical | kept |
-| + MaskGIT parallel decode | **41.32** | 24.2 | 4 | 54.9x | 8.0 MB | 290 MB | 14.8 dB | kept |
-| + bf16 autocast | **32.34** | 30.9 | 4 | 43.0x | 8.0 MB | 295 MB | 17.7 dB | reverted |
+| raster AR, no KV cache | **0.73** | 1365.5 | 64 | 1.0x | 8.0 MB | 296 MB | identical | kept |
+| + KV cache (within frame) | **4.63** | 215.8 | 64 | 6.3x | 8.0 MB | 288 MB | identical | kept |
+| + MaskGIT parallel decode | **40.93** | 24.4 | 4 | 55.9x | 8.0 MB | 293 MB | 18.3 dB | kept |
+| + carry KV cache across frames | unavailable | | | | | | | _checkpoint uses absolute positions_ |
+| + bf16 autocast | **30.57** | 32.7 | 4 | 41.7x | 8.0 MB | 298 MB | 20.3 dB | reverted |
 | + torch.compile | unavailable | | | | | | | _RuntimeError: Compiler: cl is not found._ |
-| + int8 dynamic quant | **33.62** | 29.7 | 4 | 44.7x | 0.5 MB | 442 MB | 17.2 dB | reverted |
+| + int8 dynamic quant | **31.79** | 31.5 | 4 | 43.4x | 0.5 MB | 446 MB | 22.8 dB | reverted |
 
 `peak mem` is process RSS on CPU and peak allocated VRAM on CUDA; on CPU it includes the interpreter and both models, so treat it as an envelope rather than a model footprint. `weights` is the dynamics model's parameter bytes.
 

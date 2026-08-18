@@ -108,20 +108,39 @@ def _worker(
     return ep - ep_offset
 
 
-def verify(out: str, samples: int = 2000) -> float:
-    """Fraction of sampled frames that are entirely black.
+def verify(out: str, samples: int = 2000, chunks: int = 32) -> dict:
+    """Check that what landed on disk is actually usable data.
 
-    A real frame from this game always has some non-zero pixel, so an all-black
-    frame means the write never reached disk. Collection is long and the output
-    is huge, so the failure mode worth guarding is not a crash but a file that
-    *looks* complete: episode ids are small and stay in cache, frame pages do
-    not, and a hard kill can leave the two inconsistent. Checking costs a second
-    and turns a silent data problem into a loud one.
+    Collection is long and the output is huge, so the failure mode worth
+    guarding is not a crash but a file that *looks* complete. Writes go to
+    memory-mapped pages; a hard kill can flush the small arrays and lose the
+    big one, leaving arrays that disagree with each other. Both halves of that
+    have now happened here, so both are checked:
+
+    ``black``
+        fraction of sampled frames that are entirely black. A real frame from
+        this game always has some non-zero pixel, so all-black means the write
+        never reached disk.
+    ``dead_action_chunks``
+        contiguous regions holding only a single action value. This is the
+        nastier failure, because it is invisible: the frames show an agent
+        moving while the action labels say it pressed nothing. Training on that
+        teaches the model to ignore its controller, which is the one thing a
+        playable world model cannot afford, and no amount of looking at frames
+        would reveal it.
     """
     frames = np.load(os.path.join(out, "frames.npy"), mmap_mode="r")
+    actions = np.load(os.path.join(out, "actions.npy"), mmap_mode="r")
     idx = np.linspace(0, len(frames) - 1, min(samples, len(frames))).astype(int)
-    black = sum(int(np.asarray(frames[i]).max()) == 0 for i in idx)
-    return black / len(idx)
+    black = sum(int(np.asarray(frames[i]).max()) == 0 for i in idx) / len(idx)
+
+    bounds = np.linspace(0, len(actions), chunks + 1).astype(int)
+    dead = [
+        (int(bounds[c]), int(bounds[c + 1]))
+        for c in range(chunks)
+        if len(np.unique(np.asarray(actions[bounds[c] : bounds[c + 1]]))) <= 1
+    ]
+    return {"black": black, "dead_action_chunks": dead}
 
 
 def collect(
@@ -191,13 +210,22 @@ def collect(
     print(
         f"done in {dt / 60:.1f} min  ({num_frames / max(dt, 1e-9):,.0f} frames/s, {gb:.2f} GB)"
     )
-    black = verify(out)
-    if black > 0.001:
-        raise RuntimeError(
-            f"{100 * black:.1f}% of sampled frames are all black -- writes did not reach "
-            f"disk. {out} is not usable; re-collect rather than training on it."
+    report = verify(out)
+    problems = []
+    if report["black"] > 0.001:
+        problems.append(f"{100 * report['black']:.1f}% of sampled frames are all black")
+    if report["dead_action_chunks"]:
+        problems.append(
+            f"{len(report['dead_action_chunks'])} region(s) hold a single action value, "
+            f"first at frames {report['dead_action_chunks'][0]}"
         )
-    print(f"integrity check passed ({100 * black:.2f}% black frames sampled)")
+    if problems:
+        raise RuntimeError(
+            "; ".join(problems) + f". Writes did not reach disk, so {out} is not usable. "
+            "Re-collect rather than training on it."
+        )
+    print(f"integrity check passed ({100 * report['black']:.2f}% black frames, "
+          f"no single-action regions)")
 
 
 def main() -> None:

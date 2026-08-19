@@ -168,11 +168,11 @@ def closed_loop(engine, vq, windows, device, horizon: int):
     return model, frozen, ceil
 
 
-def _churn_stats(frames: list, tokens: torch.Tensor) -> dict:
-    """Identical fraction and token churn over consecutive pairs of one rollout."""
-    ident = [bool(np.array_equal(frames[k], frames[k - 1])) for k in range(1, len(frames))]
-    churn = [int((tokens[k] != tokens[k - 1]).sum()) for k in range(1, len(tokens))]
-    return {"ident": ident, "churn": churn}
+#: hold-still pairs are bucketed by how long the no-op has been held, because
+#: the real game's changes under a no-op are almost all *settling* -- residual
+#: momentum sliding to a stop and the view height returning to rest -- and are
+#: over within about ten frames. An aggregate over 60 frames hides that.
+STILL_BUCKETS = (("k=1", 1, 1), ("k=2-10", 2, 10), ("k>10", 11, 10**9))
 
 
 @torch.no_grad()
@@ -185,15 +185,22 @@ def still_compare(cfg, engine, vq, device, starts: int, horizon: int, prefix_len
     reading -- too twitchy or too sticky -- so the real game is run through the
     same prefix, the same no-op, and the same tokenizer, and reported beside it.
 
-    Frames are compared byte-wise for the identical fraction, and in token space
-    for churn, because tokens are the channel the model actually acts in and the
+    Every pair is tagged with ``k``, the number of no-op frames held so far,
+    including ``k=1`` (the last context frame to the first no-op frame), which
+    is where the largest event usually is. Frames on which the episode ended
+    are dropped: VizDoom hands back the previous frame on the terminal tick,
+    which would register as a spurious identical pair.
+
+    Frames are compared byte-wise for the identical fraction, and in token
+    space for churn, because tokens are the channel the model acts in and the
     decoder is shared by both rows.
     """
     from ..envs import make_env
 
     C = engine.C
     rng_prefix = np.random.default_rng(0)
-    real, model = {"ident": [], "churn": []}, {"ident": [], "churn": []}
+    real, model = [], []          # (start, k, identical, churn)
+    excluded = []
 
     for s in range(starts):
         prefix = [int(rng_prefix.integers(engine.model.num_actions)) for _ in range(prefix_len)]
@@ -208,42 +215,53 @@ def still_compare(cfg, engine, vq, device, starts: int, horizon: int, prefix_len
             ctx.append(f)
             ctx_frames = np.asarray(ctx[-C:])
             ctx_actions = np.asarray(prefix[prefix_len - C : prefix_len - 1] + [noop])
-            real_frames = []
+            real_frames = [ctx[-1]]
             for _ in range(horizon):
                 f, done = env.step(noop)
-                real_frames.append(f)
                 if done:
-                    break
+                    break                    # terminal tick returns a stale frame
+                real_frames.append(f)
         finally:
             env.close()
-        if len(real_frames) < 2:
+        n_real = len(real_frames) - 1
+        if n_real < 1:
+            excluded.append(s)
             continue
 
-        rs = _churn_stats(real_frames, encode(vq, np.asarray(real_frames), device))
-        real["ident"] += rs["ident"]
-        real["churn"] += rs["churn"]
+        rt = encode(vq, np.asarray(real_frames), device)
+        for k in range(1, len(real_frames)):
+            real.append((s, k, bool(np.array_equal(real_frames[k], real_frames[k - 1])),
+                         int((rt[k] != rt[k - 1]).sum())))
 
         engine.reset(ctx_frames, ctx_actions)
-        mf, mt = [], []
-        for _ in range(len(real_frames)):
-            mf.append(engine.step(noop))
-            mt.append(engine.tokens[-1].clone())
-        ms = _churn_stats(mf, torch.stack(mt))
-        model["ident"] += ms["ident"]
-        model["churn"] += ms["churn"]
+        prev_f, prev_t = ctx[-1], engine.tokens[-1].clone()
+        for k in range(1, n_real + 1):
+            f = engine.step(noop)
+            tk = engine.tokens[-1].clone()
+            model.append((s, k, bool(np.array_equal(f, prev_f)), int((tk != prev_t).sum())))
+            prev_f, prev_t = f, tk
 
-    def summarise_side(d):
-        ident = float(np.mean(d["ident"]))
-        churn = float(np.mean(d["churn"]))
-        moved = [c for c, i in zip(d["churn"], d["ident"]) if not i]
-        return {
-            "ident": ident,
-            "churn": churn,
-            "churn_when_moved": float(np.mean(moved)) if moved else 0.0,
-            "n": len(d["ident"]),
+    def bucket(rows):
+        out = {}
+        for name, lo, hi in STILL_BUCKETS:
+            sel = [r for r in rows if lo <= r[1] <= hi]
+            moved = [r[3] for r in sel if not r[2]]
+            out[name] = {
+                "n": len(sel),
+                "ident": float(np.mean([r[2] for r in sel])) if sel else float("nan"),
+                "churn_when_moved": float(np.mean(moved)) if moved else 0.0,
+                "events": len(moved),
+            }
+        allm = [r[3] for r in rows if not r[2]]
+        out["all"] = {
+            "n": len(rows),
+            "ident": float(np.mean([r[2] for r in rows])) if rows else float("nan"),
+            "churn_when_moved": float(np.mean(allm)) if allm else 0.0,
+            "events": len(allm),
         }
+        return out
 
-    return summarise_side(real), summarise_side(model)
+    return bucket(real), bucket(model), excluded
 
 
 def main() -> None:
@@ -322,15 +340,20 @@ def main() -> None:
 
     names = list(dck.get("action_names") or [])
     noop = names.index("-") if "-" in names else 0
-    real_still, model_still = still_compare(
+    real_still, model_still, still_excluded = still_compare(
         cfg, engines["greedy"], vq, device,
         a.still_rollouts, a.still_frames, a.prefix, noop,
     )
     print(f"hold-still ({a.still_rollouts} starts x {a.still_frames} frames, "
-          f"action '{names[noop] if names else noop}'):")
-    for lbl, d in (("real game", real_still), ("model", model_still)):
-        print(f"  {lbl:10s} identical {100 * d['ident']:5.1f}%   churn {d['churn']:.2f}/64   "
-              f"when it moves {d['churn_when_moved']:.1f}/64   (n={d['n']})")
+          f"action '{names[noop] if names else noop}'"
+          + (f", starts {still_excluded} excluded: episode ended on the first no-op"
+             if still_excluded else "") + "):")
+    for bname, *_ in list(STILL_BUCKETS) + [("all", 0, 0)]:
+        r, m = real_still[bname], model_still[bname]
+        print(f"  {bname:7s} n={r['n']:3d}  real ident {100 * r['ident']:5.1f}% "
+              f"churn-when-moved {r['churn_when_moved']:4.1f} ({r['events']:2d} ev) | "
+              f"model ident {100 * m['ident']:5.1f}% churn-when-moved {m['churn_when_moved']:4.1f} "
+              f"({m['events']:2d} ev)")
 
     print(f"\nclosed-loop: {a.rollouts} rollouts x {a.horizon} frames (greedy)")
     rw = sample_windows(cfg["data"]["root"], C + a.horizon, a.rollouts, seed=1)
@@ -427,51 +450,71 @@ def main() -> None:
         "per-token would be an enormous modelling win and would still leave the world "
         "shimmering half the time it should be frozen.",
         "",
-        f"### Churn under a held no-op, against the real game ({model_still['n']} frame pairs)",
+        "### Churn under a held no-op, against the real game",
         "",
-        "The static row above is teacher-forced. This is the same question asked the way a "
-        f"viewer meets it: nothing pressed for {a.still_frames} frames, the model consuming "
-        "its own output. The real game is run through the same prefix, the same no-op and "
-        "the same tokenizer, because a churn number on its own supports either reading.",
+        f"The static row above is teacher-forced. This is the same question asked the way a "
+        f"viewer meets it: nothing pressed for {a.still_frames} frames, the model consuming its "
+        "own output. The real game is run through the same prefix, the same no-op and the same "
+        "tokenizer from the same starts, because a churn number on its own supports either "
+        "reading, too twitchy or too sticky."
+        + (f" Start(s) {still_excluded} ended the episode on the first no-op frame (residual "
+           "momentum carried the player onto the goal) and are excluded from both rows."
+           if still_excluded else ""),
         "",
-        "| | frames identical to previous | mean tokens changed | tokens changed *when* it moves |",
-        "|---|---|---|---|",
-        f"| real game | **{100 * real_still['ident']:.1f}%** | {real_still['churn']:.2f} / 64 | "
-        f"{real_still['churn_when_moved']:.1f} / 64 |",
-        f"| model | **{100 * model_still['ident']:.1f}%** | {model_still['churn']:.2f} / 64 | "
-        f"{model_still['churn_when_moved']:.1f} / 64 |",
+        "**What the real game's changes under a no-op actually are.** Every one of them was "
+        "identified before the numbers were trusted. They are *settling*: residual momentum "
+        "sliding to a stop (position deltas decaying 6.8, 4.6, 3.1, 2.1, 1.4, ... map units "
+        "per frame after a forward action) and the view height returning to rest (a 1 to 3 "
+        "row vertical shift of the whole frame with zero horizontal motion). All of it is "
+        "over within about ten frames. No hold-still window crossed an episode boundary. The "
+        "map does contain a small animated object, 37 pixels in a 9x8 region alternating "
+        "between two states every 2 to 3 frames, visible from one of the cold-start spawns; "
+        "none of the matched starts used here had it in view after the prefix, so it does not "
+        "enter this table, but a model that learned it would show tiny periodic churn that "
+        "looks like twitchiness unless you know where the player is standing.",
         "",
-        "**Two separate findings, and only the reference row separates them.**",
+        "Because the events are settling, the pairs are bucketed by how many no-op frames "
+        "have been held. An aggregate over 60 frames hides everything that matters here.",
         "",
-        f"*Frequency: the model is too twitchy, by {100 * (real_still['ident'] - model_still['ident']):.1f} "
-        "percentage points.* The real game holds a byte-identical frame "
-        f"{100 * real_still['ident']:.1f}% of the time under a held no-op; the model manages "
-        f"{100 * model_still['ident']:.1f}%. So the direction is confirmed: this is shimmer, "
-        "not sluggishness.",
+        "| held for | pairs | real: identical | real: tokens changed when it moves | model: identical | model: tokens changed when it moves |",
+        "|---|---|---|---|---|---|",
+    ]
+    for bname, *_ in list(STILL_BUCKETS) + [("all", 0, 0)]:
+        r, m = real_still[bname], model_still[bname]
+        lines.append(
+            f"| {bname} | {r['n']} | {100 * r['ident']:.1f}% ({r['events']} events) | "
+            f"{r['churn_when_moved']:.1f} / 64 | {100 * m['ident']:.1f}% ({m['events']} events) | "
+            f"{m['churn_when_moved']:.1f} / 64 |"
+        )
+    r2, m2 = real_still["k=2-10"], model_still["k=2-10"]
+    r3, m3 = real_still["k>10"], model_still["k>10"]
+    lines += [
         "",
-        f"*Magnitude: the model is far too timid.* When the real game does change under a "
-        f"no-op it changes {real_still['churn_when_moved']:.0f} of 64 patches, a real event. "
-        f"When the model changes it moves {model_still['churn_when_moved']:.1f}. The model's "
-        f"overall churn ({model_still['churn']:.2f}) is therefore *lower* than the real "
-        f"game's ({real_still['churn']:.2f}) while being wrong more often: it substitutes "
-        "frequent small flicker for rare large events. Averaged churn alone would have "
-        "scored the model as calmer than reality and called that a win.",
+        f"**Steady state (k>10, {r3['n']} pairs): the model is still.** "
+        f"{100 * m3['ident']:.1f}% identical against the real game's {100 * r3['ident']:.1f}%, "
+        f"{m3['events']} change events in {m3['n']} pairs. Whatever the model's problem is, "
+        "it is not background shimmer, and an earlier version of this section said it was.",
+        "",
+        f"**Settling window (k=1 to 10): the model changes at the right times and by too "
+        f"little.** Its change events fall in the same first-ten-frame window as the real "
+        f"game's, and nowhere else. On starts where the player was sliding, it fires on "
+        f"roughly the same frames the game does but moves ~{m2['churn_when_moved']:.0f} of 64 "
+        f"tokens where the game moves ~{r2['churn_when_moved']:.0f}. On quiet starts, where "
+        f"the game shows only the k=1 view-height settle, the model adds a few 1-to-3-token "
+        f"twitches over the first several frames. So the model is too twitchy in *count* "
+        f"inside the settling window ({m2['events']} events vs {r2['events']} in k=2-10) and "
+        f"far too timid in *magnitude*. That is a sharpness failure on the momentum and "
+        f"view-bob dynamics, confined to the moments right after motion stops.",
         "",
         "**This is much better than the teacher-forced static row predicts, and the "
         "discrepancy is the interesting part.** Teacher-forced, the model reproduces a real "
-        "previous frame's tokens exactly 0% of the time. Closed-loop, it reproduces its own "
-        f"previous tokens {100 * model_still['ident']:.1f}% of the time. Those are different "
-        "tasks: matching an external frame exactly is hard, while settling on a "
-        "self-consistent fixed point is something an autoregressive model falls into, because "
-        "its context is already full of the frame it just produced. The earlier prediction of "
-        "visible shimmer came from the teacher-forced number, and this walks it back.",
-        "",
-        "The combinatorial argument above is unaffected and still explains why *exact* "
-        "stillness is not something the objective can be pushed into. It is simply that "
-        "self-consistency, not accuracy, is doing the work here, and self-consistency is not "
-        "a property the loss optimises either. It could get worse with a stronger model that "
-        "tracks the world sharply instead of settling, which is a reason to re-run this "
-        "measurement on every rung of the scaling ladder rather than assume it holds.",
+        "previous frame's tokens exactly 0% of the time. Closed-loop and past the settling "
+        f"window, it reproduces its own previous tokens {100 * m3['ident']:.1f}% of the time. "
+        "Those are different tasks: matching an external frame exactly is hard, while settling "
+        "on a self-consistent fixed point is something an autoregressive model falls into, "
+        "because its context is already full of the frame it just produced. Self-consistency "
+        "rather than accuracy is doing the work, and neither is what the loss optimises, so "
+        "this can move either way with a stronger model and is re-measured on every rung.",
         "",
         "These are the before-numbers for any later fix.",
         "",

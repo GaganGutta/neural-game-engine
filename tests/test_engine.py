@@ -89,6 +89,45 @@ def test_carried_cache_is_exact_on_the_first_frame_and_then_measured():
     assert np.array_equal(outs[0][0], outs[1][0]), "frame 1 differs; there was no eviction yet"
 
 
+def test_decoders_emit_only_real_codebook_entries():
+    """A leftover MASK token would index past the codebook and crash decoding."""
+    for decode in ("maskgit", "raster"):
+        e = _engine(decode=decode, maskgit_steps=4)
+        e.reset(_seed_frames())
+        e.step(3)
+        assert int(e.tokens[-1].max()) < NUM_CODES, f"{decode} left a mask token behind"
+        assert int(e.tokens[-1].min()) >= 0
+
+
+def test_maskgit_uses_far_fewer_passes_than_raster():
+    calls = {"maskgit": 0, "raster": 0}
+    for decode in calls:
+        e = _engine(decode=decode, maskgit_steps=8)
+        e.reset(_seed_frames())
+        real = e._decode_logits
+
+        def counted(*args, _d=decode, _f=real, **kw):
+            calls[_d] += 1
+            return _f(*args, **kw)
+
+        e._decode_logits = counted
+        e.step(3)
+    assert calls["raster"] == e.L
+    assert calls["maskgit"] == 8
+    assert calls["maskgit"] < calls["raster"]
+
+
+# -- retrieval memory ------------------------------------------------------
+def _mem(**kw):
+    kw.setdefault("write_every", 1)
+    kw.setdefault("exclude_recent", 3)
+    kw.setdefault("min_sim", 0.9)
+    torch.manual_seed(0)
+    # Stand-in codebook: near-orthogonal rows, so unrelated frames score low.
+    embed = torch.randn(NUM_CODES, 32)
+    return RetrievalMemory(code_embed=embed, tokens_per_frame=8, capacity=32, k=2, **kw)
+
+
 # -- retrieval memory ------------------------------------------------------
 def _mem(**kw):
     kw.setdefault("write_every", 1)

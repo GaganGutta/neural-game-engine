@@ -40,9 +40,16 @@ class EngineConfig:
     top_k: int = 50
     use_cache: bool = True
     # Carry the prefix cache across frame boundaries. Requires rope positions;
-    # ignored otherwise. See NeuralGameEngine.step for what this does and does
-    # not preserve.
-    carry_cache: bool = True
+    # ignored otherwise. Off by default: carrying evicts, eviction is an
+    # approximation, and docs/CACHE_CADENCE.md is where its size is measured.
+    # The default flips only on a trained rope checkpoint the table supports.
+    # See NeuralGameEngine.step for what carrying does and does not preserve.
+    carry_cache: bool = False
+    # When carrying, rebuild the cache from scratch every N frames (0 = never).
+    # Carrying evicts the oldest block each step, and a retained block still
+    # carries the history it saw before eviction, which a fresh recompute would
+    # not have. Refreshing bounds how far that approximation can accumulate.
+    carry_refresh: int = 0
     dtype: str = "fp32"            # 'fp32' | 'bf16' | 'fp16'
     compile: bool = False
     int8: bool = False
@@ -115,6 +122,7 @@ class NeuralGameEngine:
         )
         self._cache = None   # complete blocks for frames t0 .. t0+C-2
         self._t0 = 0         # absolute frame index of the oldest cached block
+        self._since_refresh = 0
 
     # -- lifecycle ----------------------------------------------------------
     @torch.no_grad()
@@ -140,7 +148,7 @@ class NeuralGameEngine:
         )
         if self.memory is not None:
             self.memory.reset()
-        self._cache, self._t0 = None, 0
+        self._cache, self._t0, self._since_refresh = None, 0, 0
         self._frame = np.asarray(frames[-1], dtype=np.uint8)
         return self._frame
 
@@ -166,18 +174,28 @@ class NeuralGameEngine:
 
         **Frame boundaries and the KV cache.** The cache built in
         ``_logits_fn`` covers the whole context prefix and is reused across
-        every decoding pass *within* one frame, which is where the speedup
-        comes from. It is deliberately **not** carried across frames. Once the
-        window slides, every block has shifted position by one, and the model
-        uses absolute per-block position embeddings, so every cached key and
-        value is now attached to the wrong position. Reusing the cache across a
-        frame boundary would be silently wrong rather than merely stale: the
-        rollout would still look like Doom, which is exactly the kind of bug
-        this codebase is built to refuse. So the cache is rebuilt once per
-        frame, giving one prefix pass plus K cheap target passes instead of K
-        full passes. Carrying it across frames would need relative positions or
-        a ring buffer with rotated position ids, and neither is worth the
-        correctness risk at this context length.
+        every decoding pass *within* one frame, which is where most of the
+        speedup comes from and which is exact.
+
+        Whether it is also carried *across* frames depends on two things.
+        Under absolute per-block position embeddings it cannot be: the window
+        slides, every block's position changes, and every cached key is now
+        attached to the wrong embedding. Under rope a cached key keeps its own
+        absolute rotation and a later query only ever sees the relative offset,
+        so extending the cache by one block is exactly equal to recomputing the
+        whole prefix -- ``tests/test_dynamics.py`` asserts this to 1e-7.
+
+        What rope does *not* fix is eviction. When the oldest block drops off
+        the front, every retained block still carries the history it computed
+        while that block was visible, and a fresh recompute would give it no
+        such history. That is a property of block-causal attention, not of the
+        position encoding, and it is out of distribution for a model trained on
+        fixed windows. So carrying is an approximation, ``carry_cache`` is off
+        by default, and ``docs/CACHE_CADENCE.md`` is where its size is measured
+        per eviction depth and per refresh cadence. The default only flips on a
+        trained rope checkpoint that the measurement supports. Carrying saves
+        about a quarter of the frame time, because the decode passes still
+        attend the full prefix and only the prefix encode is skipped.
         """
         # The action the player just pressed belongs to the newest context
         # frame: it is what turns that frame into the one about to be drawn.
@@ -198,6 +216,7 @@ class NeuralGameEngine:
             step = self.L + 1
             self._cache = [(k[:, :, step:], v[:, :, step:]) for k, v in full]
             self._t0 += 1
+            self._since_refresh += 1
 
         if self.memory is not None:
             self.memory.write(self.tokens[-1], int(action))
@@ -233,7 +252,10 @@ class NeuralGameEngine:
                 # Blocks t0 .. t0+C-2 are unchanged from last step and are
                 # already cached; only the newest frame, whose action just
                 # arrived, still needs encoding.
+                if self.cfg.carry_refresh > 0 and self._since_refresh >= self.cfg.carry_refresh:
+                    self._cache = None       # force a from-scratch rebuild
                 if self._cache is None:
+                    self._since_refresh = 0
                     self._cache = self._encode_prefix(
                         prefix_tok[:, : C - 1], prefix_act[:, : C - 1], t0)
                 cache = self.model.extend_prefix(

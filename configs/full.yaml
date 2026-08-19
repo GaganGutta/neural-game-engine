@@ -48,6 +48,9 @@ infer:
   maskgit_steps: 8
   temperature: 1.0
   top_k: 50
+  # Cache carrying across frames is an approximation; see docs/CACHE_CADENCE.md.
+  carry_cache: false
+  carry_refresh: 0
 
 memory:
   enabled: true

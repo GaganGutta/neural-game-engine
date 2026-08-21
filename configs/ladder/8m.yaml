@@ -1,0 +1,49 @@
+# Ladder rung: see docs/LADDER_PREREG.md for the rules this run reports against.
+name: ladder-8m
+seed: 0              # overridden per run: --set seed=N name=<rung>-sN
+amp: true
+num_workers: 0       # dataset is preloaded into RAM; workers would only add IPC
+log_every: 100
+eval_every: 1000
+
+data:
+  root: data/mwh2m
+  env: my_way_home
+  frames: 2000000
+  frame_skip: 4
+  preload: true
+
+# The ladder reuses the tokenizer trained under the 'small' run (all 2M frames
+# were tokenized with it; 29.53 dB ceiling, all 512 codes live).
+tokenizer_ckpt: checkpoints/small/vqvae.pt
+
+tokenizer:            # architecture record only; weights come from tokenizer_ckpt
+  ch: 128
+  embed_dim: 64
+  num_codes: 512
+  n_res: 2
+
+infer:
+  decode: maskgit
+  maskgit_steps: 4
+  temperature: 1.0
+  top_k: 50
+  carry_cache: false
+
+memory:
+  enabled: false
+
+dynamics:
+  context: 6
+  d_model: 384
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.0
+  pos_encoding: rope
+  batch_size: 256
+  lr: 4.2e-4
+  warmup: 1000
+  # token_budget is set to the 2M rung's converged tokens-seen before launch.
+  token_budget: null
+  steps: 58000            # safety cap; the budget normally binds first
+  checkpoint_every: 2000

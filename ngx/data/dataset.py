@@ -90,11 +90,20 @@ class TokenSequenceDataset(_LazyArrays, Dataset):
     including ``actions[t]``.
     """
 
-    def __init__(self, root: str, context: int = 16, split: str = "train") -> None:
+    def __init__(self, root: str, context: int = 16, split: str = "train",
+                 preload: bool = False) -> None:
         self.root = root
         self.meta = load_meta(root)
         self.context = context
         self.window = context + 1
+        if preload:
+            # Load tokens and actions fully into RAM (~260 MB for 2M frames).
+            # On a GPU box the per-item memmap read is pure overhead, and a
+            # preloaded dataset needs no DataLoader workers at all.
+            self.__dict__["_mm"] = {
+                "tokens": np.load(os.path.join(root, "tokens.npy")),
+                "actions": np.load(os.path.join(root, "actions.npy")),
+            }
 
         episodes = np.load(os.path.join(root, "episodes.npy"))
         n = len(episodes)

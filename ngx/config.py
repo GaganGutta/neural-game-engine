@@ -53,6 +53,11 @@ def find_ckpt(cfg: dict, stage: str, filename: str) -> str:
     turned into a FileNotFoundError in the middle of a long job rather than a
     graceful fall back to the shipped weights.
     """
+    explicit = cfg.get(f"{stage}_ckpt")
+    if explicit:
+        if os.path.exists(explicit):
+            return explicit
+        raise FileNotFoundError(f"{stage}_ckpt is set to {explicit}, which does not exist")
     local = os.path.join(run_dir(cfg, stage), filename)
     if os.path.exists(local):
         return local

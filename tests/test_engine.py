@@ -74,7 +74,7 @@ def test_carried_cache_is_exact_on_the_first_frame_and_then_measured():
     Frame 1 has no eviction: the cache was built fresh from C-1 blocks and
     extended by one, which tests/test_dynamics.py proves equals a full
     recompute. So frame 1 must be byte-identical. Later frames may differ, and
-    how much is what ngx/eval/cache_cadence.py reports; a unit test on an
+    how much is a measurement (docs/CACHE_CADENCE.md); a unit test on an
     untrained toy model cannot say anything trustworthy about it, and an
     earlier version of this test claimed it could.
     """

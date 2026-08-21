@@ -41,15 +41,10 @@ class EngineConfig:
     use_cache: bool = True
     # Carry the prefix cache across frame boundaries. Requires rope positions;
     # ignored otherwise. Off by default: carrying evicts, eviction is an
-    # approximation, and docs/CACHE_CADENCE.md is where its size is measured.
-    # The default flips only on a trained rope checkpoint the table supports.
-    # See NeuralGameEngine.step for what carrying does and does not preserve.
+    # approximation, and it measured as material (docs/CACHE_CADENCE.md), so
+    # the exact rebuild-per-frame path is the default. This flag exists for
+    # the benchmark row. See NeuralGameEngine.step for details.
     carry_cache: bool = False
-    # When carrying, rebuild the cache from scratch every N frames (0 = never).
-    # Carrying evicts the oldest block each step, and a retained block still
-    # carries the history it saw before eviction, which a fresh recompute would
-    # not have. Refreshing bounds how far that approximation can accumulate.
-    carry_refresh: int = 0
     dtype: str = "fp32"            # 'fp32' | 'bf16' | 'fp16'
     compile: bool = False
     int8: bool = False
@@ -122,7 +117,6 @@ class NeuralGameEngine:
         )
         self._cache = None   # complete blocks for frames t0 .. t0+C-2
         self._t0 = 0         # absolute frame index of the oldest cached block
-        self._since_refresh = 0
 
     # -- lifecycle ----------------------------------------------------------
     @torch.no_grad()
@@ -148,7 +142,7 @@ class NeuralGameEngine:
         )
         if self.memory is not None:
             self.memory.reset()
-        self._cache, self._t0, self._since_refresh = None, 0, 0
+        self._cache, self._t0 = None, 0
         self._frame = np.asarray(frames[-1], dtype=np.uint8)
         return self._frame
 
@@ -190,12 +184,12 @@ class NeuralGameEngine:
         while that block was visible, and a fresh recompute would give it no
         such history. That is a property of block-causal attention, not of the
         position encoding, and it is out of distribution for a model trained on
-        fixed windows. So carrying is an approximation, ``carry_cache`` is off
-        by default, and ``docs/CACHE_CADENCE.md`` is where its size is measured
-        per eviction depth and per refresh cadence. The default only flips on a
-        trained rope checkpoint that the measurement supports. Carrying saves
-        about a quarter of the frame time, because the decode passes still
-        attend the full prefix and only the prefix encode is skipped.
+        fixed windows. Measured (docs/CACHE_CADENCE.md), the divergence is
+        material, so ``carry_cache`` is off by default and every frame rebuilds
+        the cache from scratch, which is exact. Carrying remains available as a
+        benchmark row for rope checkpoints; it saves about a quarter of the
+        frame time, because the decode passes still attend the full prefix and
+        only the prefix encode is skipped.
         """
         # The action the player just pressed belongs to the newest context
         # frame: it is what turns that frame into the one about to be drawn.
@@ -216,7 +210,6 @@ class NeuralGameEngine:
             step = self.L + 1
             self._cache = [(k[:, :, step:], v[:, :, step:]) for k, v in full]
             self._t0 += 1
-            self._since_refresh += 1
 
         if self.memory is not None:
             self.memory.write(self.tokens[-1], int(action))
@@ -252,10 +245,7 @@ class NeuralGameEngine:
                 # Blocks t0 .. t0+C-2 are unchanged from last step and are
                 # already cached; only the newest frame, whose action just
                 # arrived, still needs encoding.
-                if self.cfg.carry_refresh > 0 and self._since_refresh >= self.cfg.carry_refresh:
-                    self._cache = None       # force a from-scratch rebuild
                 if self._cache is None:
-                    self._since_refresh = 0
                     self._cache = self._encode_prefix(
                         prefix_tok[:, : C - 1], prefix_act[:, : C - 1], t0)
                 cache = self.model.extend_prefix(

@@ -97,6 +97,32 @@ default is a full cache rebuild at every frame boundary, which is exact.
 Carrying stays as one benchmark row per rope rung; it may be re-read on a
 trained checkpoint but no sweep machinery exists and none is planned.
 
+## Amendments of 2026-08-19, added before any scaled run
+
+**Seeds and resolution.** The 2M rung runs three times with seeds 0, 1, 2 at
+identical settings. The spread (max minus min) of one-step PSNR on moving
+transitions across those seeds is the **resolution of the ladder**: any
+rung-to-rung difference smaller than that spread is read as "no effect", and
+every rule above is read against it. The same spread qualifies the other
+reported metrics wherever a rule compares rungs.
+
+**Learning rate across rungs, decided before results.** A single shared LR
+would let the 26M rung underperform for optimization reasons and fire rule 1
+"structural" on a hyperparameter artifact. Policy: the 2M rung keeps its tuned
+6.0e-4 (d_model 192). At 8M, a three-point LR probe runs first -- the
+width-scaled anchor `6.0e-4 * sqrt(192/384) = 4.2e-4`, twice it, and half it --
+each for ~0.4 epochs, winner by held-out loss at matched tokens. The full 8M
+run uses the winner, and 26M uses the winner scaled by `sqrt(384/512)`. If the
+probe winner is an endpoint of the three, the probe extends one more point in
+that direction before 26M starts.
+
+**Context axis, interpretation bound.** The context rungs run at 8M because
+that is the affordable capacity, and the bound is stated now: a null context
+result at 8M supports only "8M cannot exploit longer context on this task",
+not "context does not matter". Upgrading to the general claim would require
+re-running the context axis at the best capacity, which is a separate,
+costed decision.
+
 ## What is not pre-registered
 
 Anything not written above. If a rung produces something surprising outside

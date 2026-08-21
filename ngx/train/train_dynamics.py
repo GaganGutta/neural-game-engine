@@ -64,6 +64,27 @@ from .common import (
 )
 
 
+def prune_checkpoints(out: str, keep: int) -> None:
+    """Keep only the newest ``keep`` step-numbered checkpoints.
+
+    ``dynamics.pt`` (best-by-val-loss) and ``final.pt`` live outside the
+    rotation and are never touched. Called after every checkpoint write, so
+    disk use per run is bounded at roughly ``(keep + 2) x`` checkpoint size no
+    matter how long the run goes -- a 26M checkpoint with optimizer state is
+    ~300 MB and the pull side of the sync has 27 GB free.
+    """
+    import glob
+
+    if keep <= 0:
+        return
+    cks = sorted(glob.glob(os.path.join(out, "ckpt_*.pt")))
+    for path in cks[:-keep]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def build_tokenizer(cfg: dict, device: torch.device) -> tuple[VQVAE, dict]:
     ck = load_ckpt(find_ckpt(cfg, "tokenizer", "vqvae.pt"), map_location="cpu")
     tc = ck["cfg"]["tokenizer"]
@@ -230,6 +251,7 @@ def main() -> None:
             )
         if step and step % ckpt_every == 0:
             save_ckpt(os.path.join(out, f"ckpt_{step:07d}.pt"), model, cfg, **extras(step))
+            prune_checkpoints(out, int(dyn.get("keep_checkpoints", 3)))
         if step and step % eval_every == 0:
             vl, ma, ca = evaluate(model, val_dl, device)
             sample_grid(model, vq, val_ds, device, os.path.join(out, f"pred_{step:06d}.png"))

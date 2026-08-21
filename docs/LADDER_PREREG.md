@@ -90,10 +90,12 @@ one.
 
 ## Rule 4: eviction and cache carrying
 
-The cache-carrying approximation is measured, not asserted, on every rope
-checkpoint via the cadence sweep in [CACHE_CADENCE.md](CACHE_CADENCE.md). The
-default cadence is whatever that table supports on the first trained rope rung,
-and it is re-checked on the largest.
+*Amended 2026-08-19, before any scaled run:* the cadence sweep was dropped by
+decision. Never-refreshed carrying diverges materially from full recompute
+(40% of frames identical over 60-frame rollouts, untrained model), so the
+default is a full cache rebuild at every frame boundary, which is exact.
+Carrying stays as one benchmark row per rope rung; it may be re-read on a
+trained checkpoint but no sweep machinery exists and none is planned.
 
 ## What is not pre-registered
 

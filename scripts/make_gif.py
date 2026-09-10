@@ -39,6 +39,21 @@ def _label(canvas, text, x, y, color=(238, 238, 244), scale=0.45):
     cv2.putText(canvas, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
 
 
+def _pane_labels(pane_px: int) -> tuple[str, str]:
+    """Longest label pair that fits inside one pane at the label font size.
+
+    The full labels need a pane of about 160 px; below that (``--scale 2`` for a
+    thumbnail) they ran into each other, so shorter pairs are tried in order.
+    """
+    pairs = [("REAL GAME (VizDoom)", "WORLD MODEL (no engine)"),
+             ("REAL GAME", "WORLD MODEL"), ("REAL", "MODEL")]
+    width = lambda text: cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0][0]  # noqa: E731
+    for left, right in pairs:
+        if max(width(left), width(right)) <= pane_px - 12:
+            return left, right
+    return pairs[-1]
+
+
 def compose(real, fake, scale: int, step: int, total: int, retrieved: int) -> np.ndarray:
     s = 64 * scale
     up = lambda im: cv2.resize(im, (s, s), interpolation=cv2.INTER_NEAREST)  # noqa: E731
@@ -49,8 +64,9 @@ def compose(real, fake, scale: int, step: int, total: int, retrieved: int) -> np
 
     # Pane labels on top, run state on the bottom. Sharing one bar made the
     # right-hand label collide with the counter at this width.
-    _label(canvas, "REAL GAME (VizDoom)", 8, 20, (150, 150, 165))
-    _label(canvas, "WORLD MODEL (no engine)", s + GAP + 8, 20, (120, 220, 140))
+    left, right = _pane_labels(s)
+    _label(canvas, left, 8, 20, (150, 150, 165))
+    _label(canvas, right, s + GAP + 8, 20, (120, 220, 140))
 
     d = psnr_u8(real[None], fake[None])
     tag = f"frame {step:3d}/{total}    PSNR {d:4.1f} dB"

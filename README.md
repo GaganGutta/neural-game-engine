@@ -159,6 +159,29 @@ real game only scores 11.25 dB against itself at matched poses, because "same
 pose" is a tolerance and not an identity. A model number is meaningless without
 it.
 
+## Scaling ladder, in progress
+
+The 2.0M CPU checkpoint above was trained on 150k frames for under one epoch.
+The same architecture trained for 16 epochs on a 2M-frame set, on a rented
+RTX 4090, is the current best checkpoint (`ladder-2m-s0` in
+[docs/LADDER.md](docs/LADDER.md): one-step PSNR on moving transitions 27.33 dB
+against a 29.53 dB tokenizer ceiling, 64% of the headroom over copy-last-frame).
+
+![2M model after 16 epochs, closed loop](assets/demo_2m16.gif)
+
+*Same layout as the top of the page, sampled decoding, 110 closed-loop frames.
+It tracks the real game for the first few seconds and then commits to a room
+that is not there; the PSNR readout is the record of when. Regenerate with
+`python scripts/make_gif.py --config configs/ladder/2m.yaml --set
+name=ladder-2m-s0 --frames 110 --out assets/demo_2m16.gif`.*
+
+The ladder itself (2M, 8M, 26M at a fixed 6-frame context, then 6, 12 and 24
+frames of context at 8M, all at a matched 2.9B-token budget) is pre-registered
+in [docs/LADDER_PREREG.md](docs/LADDER_PREREG.md), and every rung is scored by
+`python -m ngx.eval.ladder` on the same held-out windows. Three seeds of the 2M
+rung put the ladder's resolution at 0.10 dB. The 8M and 26M rungs have not run
+yet.
+
 ## Reproducing
 
 Everything below was run on an 8-core laptop CPU (Ryzen 9 8945HS, 32 GB), no

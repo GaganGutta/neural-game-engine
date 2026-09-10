@@ -1,0 +1,45 @@
+{
+ "results": {
+  "ladder-2m-s0": {
+   "name": "ladder-2m-s0",
+   "params": 1975488,
+   "context": 6,
+   "d_model": 192,
+   "n_layers": 4,
+   "seed": 0,
+   "tokens_seen": 11381760000,
+   "epochs": 15.613338747498222,
+   "val_loss": 1.920220398902893,
+   "cold_acc": 0.4076202392578125,
+   "one_step_moving": 27.32901945732455,
+   "one_step_moving_median": 27.552807724340397,
+   "one_step_token_acc": 0.37763746803069054,
+   "copy_moving": 21.197234671344763,
+   "ceiling_moving": 30.72697434551251,
+   "headroom_pct": 64.34367564731288,
+   "n_moving": 782,
+   "lead": {
+    "1": 5.0416598255356675,
+    "8": 3.213827187079122,
+    "16": 1.0630227151945775,
+    "32": -0.3227011511810538
+   },
+   "revisit_model": 9.156230915843064,
+   "revisit_game": 11.245604158640374,
+   "revisit_pairs": 40,
+   "drift_k100": 11.362979192494,
+   "drift_k1000": 24.167173881716604,
+   "still_k2_10_ident": 0.7936507936507936,
+   "still_k2_10_churn": 11.76923076923077,
+   "still_k10_ident": 1.0,
+   "still_ref_k2_10_ident": 0.7936507936507936,
+   "still_ref_k2_10_churn": 32.69230769230769,
+   "traj_seed": 1
+  }
+ },
+ "groups": {
+  "2M, 16-epoch schedule, seed 0": [
+   "ladder-2m-s0"
+  ]
+ }
+}

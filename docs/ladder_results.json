@@ -35,11 +35,127 @@
    "still_ref_k2_10_ident": 0.7936507936507936,
    "still_ref_k2_10_churn": 32.69230769230769,
    "traj_seed": 1
+  },
+  "ladder-2m-t4-s0": {
+   "name": "ladder-2m-t4-s0",
+   "params": 1975488,
+   "context": 6,
+   "d_model": 192,
+   "n_layers": 4,
+   "seed": 0,
+   "tokens_seen": 2916126720,
+   "epochs": 4.000301738043229,
+   "val_loss": 2.1298000633716585,
+   "cold_acc": 0.35857086181640624,
+   "one_step_moving": 26.607765064143752,
+   "one_step_moving_median": 26.760803136883325,
+   "one_step_token_acc": 0.33032289002557547,
+   "copy_moving": 21.197234671344763,
+   "ceiling_moving": 30.72697434551251,
+   "headroom_pct": 56.775217139092554,
+   "n_moving": 782,
+   "lead": {
+    "1": 4.414388964413927,
+    "8": 3.290120133014291,
+    "16": 1.2828700816646403,
+    "32": 0.03937859234070018
+   },
+   "revisit_model": 8.808627084359374,
+   "revisit_game": 11.245604158640374,
+   "revisit_pairs": 40,
+   "drift_k100": 11.082023534640012,
+   "drift_k1000": 11.658718481483808,
+   "still_k2_10_ident": 0.873015873015873,
+   "still_k2_10_churn": 2.25,
+   "still_k10_ident": 1.0,
+   "still_ref_k2_10_ident": 0.7936507936507936,
+   "still_ref_k2_10_churn": 32.69230769230769,
+   "traj_seed": 1
+  },
+  "ladder-2m-t4-s1": {
+   "name": "ladder-2m-t4-s1",
+   "params": 1975488,
+   "context": 6,
+   "d_model": 192,
+   "n_layers": 4,
+   "seed": 1,
+   "tokens_seen": 2916126720,
+   "epochs": 4.000301738043229,
+   "val_loss": 2.127998059988022,
+   "cold_acc": 0.36336669921875,
+   "one_step_moving": 26.70518565403405,
+   "one_step_moving_median": 26.821872557110797,
+   "one_step_token_acc": 0.3306425831202046,
+   "copy_moving": 21.197234671344763,
+   "ceiling_moving": 30.72697434551251,
+   "headroom_pct": 57.79749679437397,
+   "n_moving": 782,
+   "lead": {
+    "1": 4.335785987918417,
+    "8": 2.942448094684792,
+    "16": 1.724061222080877,
+    "32": -0.005205194937420998
+   },
+   "revisit_model": 9.304845251516483,
+   "revisit_game": 11.245604158640374,
+   "revisit_pairs": 40,
+   "drift_k100": 10.808650608270511,
+   "drift_k1000": 7.863887700588904,
+   "still_k2_10_ident": 0.9206349206349206,
+   "still_k2_10_churn": 4.2,
+   "still_k10_ident": 1.0,
+   "still_ref_k2_10_ident": 0.7936507936507936,
+   "still_ref_k2_10_churn": 32.69230769230769,
+   "traj_seed": 1
+  },
+  "ladder-2m-t4-s2": {
+   "name": "ladder-2m-t4-s2",
+   "params": 1975488,
+   "context": 6,
+   "d_model": 192,
+   "n_layers": 4,
+   "seed": 2,
+   "tokens_seen": 2795520000,
+   "epochs": 3.834855130964476,
+   "val_loss": 2.143515646457672,
+   "cold_acc": 0.35575103759765625,
+   "one_step_moving": 26.650964250978934,
+   "one_step_moving_median": 26.780165884434886,
+   "one_step_token_acc": 0.3288243286445013,
+   "copy_moving": 21.197234671344763,
+   "ceiling_moving": 30.72697434551251,
+   "headroom_pct": 57.22852634073089,
+   "n_moving": 782,
+   "lead": {
+    "1": 4.1462604383994055,
+    "8": 2.72939563607828,
+    "16": 1.4624025435559922,
+    "32": 0.2420727264875282
+   },
+   "revisit_model": 9.947411111113837,
+   "revisit_game": 11.245604158640374,
+   "revisit_pairs": 40,
+   "drift_k100": 11.821932286902104,
+   "drift_k1000": 7.863954805018942,
+   "still_k2_10_ident": 0.9682539682539683,
+   "still_k2_10_churn": 7.0,
+   "still_k10_ident": 1.0,
+   "still_ref_k2_10_ident": 0.7936507936507936,
+   "still_ref_k2_10_churn": 32.69230769230769,
+   "traj_seed": 1
   }
  },
  "groups": {
   "2M, 16-epoch schedule, seed 0": [
    "ladder-2m-s0"
+  ],
+  "2M, 16-epoch long-schedule reference": [
+   "ladder-2m-s0"
+  ],
+  "2M at T* (4 epochs), seeds 0-2": [
+   "ladder-2m-t4-s0",
+   "ladder-2m-t4-s1",
+   "ladder-2m-t4-s2"
   ]
  }
 }

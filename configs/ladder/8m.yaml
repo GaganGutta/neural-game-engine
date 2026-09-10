@@ -43,7 +43,8 @@ dynamics:
   batch_size: 256
   lr: 4.2e-4
   warmup: 1000
-  # token_budget is set to the 2M rung's converged tokens-seen before launch.
-  token_budget: null
-  steps: 58000            # safety cap; the budget normally binds first
+  # T* = 4 epochs of the 2M-frame set (tokens = windows x context x 65); the
+  # trainer derives the step count from this and plans the cosine over it.
+  token_budget: 2916000000
+  steps: 40000            # safety cap only; the budget binds first
   checkpoint_every: 2000

@@ -40,9 +40,11 @@ dynamics:
   n_heads: 8
   dropout: 0.0
   pos_encoding: rope
-  batch_size: 256
+  batch_size: 128
   lr: 3.6e-4
   warmup: 1000
-  token_budget: null      # matched to the 2M rung; set before launch
-  steps: 58000
-  checkpoint_every: 1000  # slower rung, cheaper to lose less
+  # T* = 4 epochs of the 2M-frame set (tokens = windows x context x 65); the
+  # trainer derives the step count from this and plans the cosine over it.
+  token_budget: 2916000000
+  steps: 80000            # safety cap only; the budget binds first
+  checkpoint_every: 2000

@@ -43,6 +43,8 @@ dynamics:
   batch_size: 64
   lr: 4.2e-4
   warmup: 1000
-  token_budget: null
-  steps: 58000
+  # T* = 4 epochs of the 2M-frame set (tokens = windows x context x 65); the
+  # trainer derives the step count from this and plans the cosine over it.
+  token_budget: 2916000000
+  steps: 60000            # safety cap only; the budget binds first
   checkpoint_every: 2000

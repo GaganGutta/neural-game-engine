@@ -123,6 +123,32 @@ not "context does not matter". Upgrading to the general claim would require
 re-running the context axis at the best capacity, which is a separate,
 costed decision.
 
+## Amendment of 2026-09-10, after 2M seed 0 and before any other run
+
+**The plateau rule did not fire, and the ladder re-bases on a fixed token
+budget.** 2M seed 0 ran a 16-epoch cosine (the 58k-step cap had been sized for
+batch 256 and became 16 epochs at the batch actually used, 512). Held-out loss
+improved by 0.005 to 0.02 per 1000 steps for the entire schedule and ended at
+1.920 after 15.6 epochs, so "to convergence" collapsed into "to the cap", and
+matched tokens at that budget would put the 26M rung far outside the $60 cap.
+
+Every rung from here, including a fresh 2M, trains at **T\* = 4 epochs of the
+2M-frame dataset = 2.916B tokens** (tokens = windows x context x 65), with the
+cosine schedule planned over exactly that budget so it decays to 5% at the end.
+The three 2M seeds at T\* define the ladder's resolution as before. All T\*
+numbers are "at 4 epochs" by construction; a rung that would have kept
+improving is equally under-trained relative to every other rung, which is the
+comparison the ladder is for.
+
+Seed 0's 16-epoch run is kept as the **long-schedule reference**. It already
+answers rule 1's starved-vs-structural question for 2M: 64% of headroom at 4x
+the T\* budget against 20% for the CPU checkpoint. The T\* ladder is therefore
+mainly answering rule 2, which axis moves which metric at equal tokens.
+
+Batch sizes per rung are chosen for memory (512 at 2M, smaller above) and the
+budget fixes the step count, so batch is not a confound in tokens seen. The 8M
+LR probe stands as written.
+
 ## What is not pre-registered
 
 Anything not written above. If a rung produces something surprising outside

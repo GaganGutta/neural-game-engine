@@ -26,6 +26,11 @@ own last C of them; revisit pairs are found from frame ``MAX_CONTEXT`` and
 every drift rollout starts there. The hold-still starts share a 40-frame
 prefix already. So rows are paired comparisons on both ladder axes.
 
+The 8M learning-rate probe is recorded with ``--probe <run>=<lr> ...``: each
+run's ``heldout.json`` (written on the training machine by
+:mod:`ngx.eval.heldout`, the numbers the winner was picked on) goes into the
+same store and is rendered as its own table.
+
 Results accumulate in ``docs/ladder_results.json`` keyed by run name, and
 ``docs/LADDER.md`` is regenerated from that file every time. A stored row from
 an older eval protocol is dropped until it is rescored, never mixed in. For
@@ -165,7 +170,40 @@ def evaluate_run(cfg: dict, name: str, device, shared: dict, a) -> dict:
     }
 
 
-def render(results: dict, groups: dict) -> str:
+def load_probe(specs: list[str], run_root: str = "runs") -> dict:
+    """``<run>=<lr>`` specs -> probe rows read from each run's heldout.json."""
+    rows = {}
+    for spec in specs:
+        name, lr = spec.split("=", 1)
+        with open(os.path.join(run_root, name, "heldout.json")) as f:
+            h = json.load(f)
+        rows[name] = {"lr": float(lr), "heldout_loss": h["loss"], "cold_loss": h["cold_loss"],
+                      "cold_acc": h["cold_acc"], "tokens_seen": h["tokens_seen"], "epochs": h["epochs"]}
+    return rows
+
+
+def render_probe(probe: dict) -> list[str]:
+    if not probe:
+        return []
+    finite = {n: r for n, r in probe.items() if np.isfinite(r["heldout_loss"])}
+    win = min(finite, key=lambda n: finite[n]["heldout_loss"]) if finite else None
+    L = ["", "## 8M learning-rate probe", "",
+         "Each run is 0.4 epochs at batch 256 with the cosine planned over that budget; the winner "
+         "is the lowest held-out loss at matched tokens, and an endpoint winner extends the probe "
+         "by one point, as pre-registered. 26M uses the winner times sqrt(384/512).", "",
+         "| run | lr | tokens seen | held-out loss | cold loss | cold acc |",
+         "|---|---|---|---|---|---|"]
+    for n, r in sorted(probe.items(), key=lambda kv: kv[1]["lr"]):
+        mark = " **(winner)**" if n == win else ""
+        L.append(f"| {n}{mark} | {r['lr']:.3g} | {(r['tokens_seen'] or 0) / 1e6:.1f}M | "
+                 f"{r['heldout_loss']:.4f} | {r['cold_loss']:.4f} | {r['cold_acc']:.3f} |")
+    if win:
+        lr = probe[win]["lr"]
+        L += ["", f"Winner {lr:.3g}; 26M learning rate {float('%.3g' % (lr * (384 / 512) ** 0.5)):.3g}."]
+    return L
+
+
+def render(results: dict, groups: dict, probe: dict | None = None) -> str:
     L = ["# Scaling ladder", "",
          "Every rung is scored on its final checkpoint, on the same held-out frames, reference "
          "trajectory, revisit pairs and hold-still starts, and every context length predicts "
@@ -209,8 +247,10 @@ def render(results: dict, groups: dict) -> str:
                  f"{min(v):.2f} to {max(v):.2f} dB, **spread {max(v) - min(v):.2f} dB**; "
                  f"headroom {min(h):.0f}% to {max(h):.0f}%, spread {max(h) - min(h):.0f} points; "
                  f"held-out loss {min(lo):.3f} to {max(lo):.3f}.")
+    L += render_probe(probe or {})
     L += ["", "Regenerate with `python -m ngx.eval.ladder --config <rung.yaml> --runs <names> "
-          "--group <label>`; results accumulate in `docs/ladder_results.json`.", ""]
+          "--group <label>` (and `--probe <run>=<lr> ...` for the probe table); results "
+          "accumulate in `docs/ladder_results.json`.", ""]
     return "\n".join(L)
 
 
@@ -218,7 +258,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--config", required=True)
     p.add_argument("--set", nargs="*", default=[])
-    p.add_argument("--runs", nargs="+", required=True, help="run names under runs/")
+    p.add_argument("--runs", nargs="*", default=[], help="run names under runs/")
+    p.add_argument("--probe", nargs="*", default=[], help="<run>=<lr> learning-rate probe runs")
     p.add_argument("--group", default=None, help="label for the seed-spread line")
     p.add_argument("--device", default="auto")
     p.add_argument("--windows", type=int, default=800)
@@ -256,14 +297,16 @@ def main() -> None:
               + f" | r2p {r['revisit_model']:.2f}/{r['revisit_game']:.2f} ({r['revisit_pairs']} pairs) | "
               f"still2-10 {100 * r['still_k2_10_ident']:.0f}%/{r['still_k2_10_churn']:.1f} "
               f"k>10 {100 * r['still_k10_ident']:.1f}%", flush=True)
-    if a.group:
+    if a.group and a.runs:
         store["groups"][a.group] = list(a.runs)
+    if a.probe:
+        store["probe"] = load_probe(a.probe, cfg.get("run_root", "runs"))
 
     os.makedirs(os.path.dirname(a.results) or ".", exist_ok=True)
     with open(a.results, "w") as f:
         json.dump(store, f, indent=1)
     with open(a.out, "w") as f:
-        f.write(render(store["results"], store["groups"]))
+        f.write(render(store["results"], store["groups"], store.get("probe")))
     print(f"\nwrote {a.out} and {a.results}")
 
 

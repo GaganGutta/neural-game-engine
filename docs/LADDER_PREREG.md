@@ -149,6 +149,37 @@ Batch sizes per rung are chosen for memory (512 at 2M, smaller above) and the
 budget fixes the step count, so batch is not a confound in tokens seen. The 8M
 LR probe stands as written.
 
+## Amendment of 2026-09-13, before any 8M or 26M result is read
+
+Measurement fixes only. The rules, the rungs and the token budget above are
+unchanged. The 8M learning-rate probe was already running when this was
+written; its losses are used only to pick the learning rate, as the probe
+policy says, and nothing below depends on them.
+
+**Every rung is scored on its final checkpoint.** The report used to load
+`dynamics.pt`, the best-by-validation checkpoint, which the trainer picks on a
+20-batch validation slice. For `ladder-2m-t4-s2` that was step 14000 at 3.83
+epochs, so one of the three seeds that set the resolution was not at T\*.
+Scoring `final.pt` puts every rung at exactly T\*, as the 2026-09-10
+amendment intends.
+
+**Held-out loss comes from fixed frames.** The trainer's validation loss reads
+the first 20 batches of the unshuffled validation split, so how much of it a
+rung sees depends on its batch size: 10,240 windows at batch 512, 1,280 at
+batch 64. `ngx.eval.heldout` scores 4,096 target frames spread over the whole
+split, the same frames for every rung, with seeded masks. The held-out loss
+and cold accuracy columns come from it, and the 8M probe is decided on it.
+
+**Context rungs predict the same frames.** One-step windows, closed-loop
+windows and revisit pairs were drawn separately for each context length, so a
+24-frame rung would have been scored on mostly different target frames than a
+6-frame rung. Windows are now drawn once with 24 frames of history and each
+rung is handed its own last C frames; revisit pairs are found from frame 24
+and every drift rollout starts there.
+
+All existing rows are rescored under this protocol, including the three 2M
+seeds, so the resolution is measured again before any rung is compared with it.
+
 ## What is not pre-registered
 
 Anything not written above. If a rung produces something surprising outside

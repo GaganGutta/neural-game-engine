@@ -47,6 +47,8 @@ The data order after the resume point is a fresh shuffle rather than the
 continuation of the interrupted one; everything that is matched across
 ladder rungs (tokens seen, schedule, batch) is unchanged.
 
+A non-finite training loss ends the run with exit code 3 and no ``final.pt``.
+
 ``compile: true`` in the config wraps the training loss in ``torch.compile``.
 The math is the same; it only changes how fast the steps run.
 """
@@ -279,6 +281,11 @@ def main() -> None:
         tok, act = tok.to(device, non_blocking=True), act.to(device, non_blocking=True)
         with autocast:
             loss, stats = loss_fn(tok, act)
+        if not np.isfinite(stats["loss"]):
+            # A diverged run would otherwise train to the end of its budget and
+            # write a final.pt full of NaNs. Exit non-zero so nothing marks it done.
+            print(f"stopped: non-finite loss {stats['loss']} at step {step:,} | lr {lr:.2e}", flush=True)
+            raise SystemExit(3)
         opt.zero_grad(set_to_none=True)
         if scaler is not None:
             scaler.scale(loss).backward()

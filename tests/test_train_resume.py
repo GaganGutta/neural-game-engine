@@ -156,3 +156,25 @@ def test_resume_restores_weights_optimizer_and_plateau_state(tmp_path, monkeypat
     for i, s in st.items():
         assert torch.equal(s["exp_avg"].cpu(), ck["optimizer"]["state"][i]["exp_avg"]), i
         assert s["step"].device.type == "cpu"
+
+
+def test_non_finite_loss_stops_the_run_without_a_final_checkpoint(tmp_path, monkeypatch, capsys):
+    cfg = _setup(tmp_path)
+    real = train_dynamics.DynamicsTransformer.loss
+    calls = {"n": 0}
+
+    def diverging(self, tok, act):
+        loss, stats = real(self, tok, act)
+        if self.training:
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                loss = loss * float("nan")
+                stats = dict(stats, loss=float("nan"))
+        return loss, stats
+
+    monkeypatch.setattr(train_dynamics.DynamicsTransformer, "loss", diverging)
+    with pytest.raises(SystemExit) as exit_info:
+        _train(monkeypatch, cfg)
+    assert exit_info.value.code == 3
+    assert "non-finite loss" in capsys.readouterr().out
+    assert not (tmp_path / "runs" / "resume" / "dynamics" / "final.pt").exists()

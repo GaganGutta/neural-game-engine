@@ -15,4 +15,17 @@ Real-game hold-still reference: k=2-10 79.4% identical, 32.7 tokens when it move
 
 - **2M at T* (4 epochs), seeds 0-2** (3 runs): one-step moving PSNR 27.04 to 27.12 dB, **spread 0.08 dB**; headroom 57% to 58%, spread 1 points; held-out loss 2.151 to 2.172.
 
-Regenerate with `python -m ngx.eval.ladder --config <rung.yaml> --runs <names> --group <label>`; results accumulate in `docs/ladder_results.json`.
+## 8M learning-rate probe
+
+Each run is 0.4 epochs at batch 256 with the cosine planned over that budget; the winner is the lowest held-out loss at matched tokens, and an endpoint winner extends the probe by one point, as pre-registered. 26M uses the winner times sqrt(384/512).
+
+| run | lr | tokens seen | held-out loss | cold loss | cold acc |
+|---|---|---|---|---|---|
+| ladder-8m-probe-lr0.5x | 0.00021 | 291.6M | 2.6347 | 3.0163 | 0.255 |
+| ladder-8m-probe-lr1x | 0.00042 | 291.6M | 2.3853 | 2.7493 | 0.292 |
+| ladder-8m-probe-lr2x | 0.00084 | 291.6M | 2.2236 | 2.5908 | 0.317 |
+| ladder-8m-probe-lr4x **(winner)** | 0.00168 | 291.6M | 2.1245 | 2.4787 | 0.337 |
+
+Winner 0.00168; 26M learning rate 0.00145.
+
+Regenerate with `python -m ngx.eval.ladder --config <rung.yaml> --runs <names> --group <label>` (and `--probe <run>=<lr> ...` for the probe table); results accumulate in `docs/ladder_results.json`.

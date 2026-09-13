@@ -185,5 +185,39 @@
    "ladder-2m-t4-s1",
    "ladder-2m-t4-s2"
   ]
+ },
+ "probe": {
+  "ladder-8m-probe-lr0.5x": {
+   "lr": 0.00021,
+   "heldout_loss": 2.6346541358837947,
+   "cold_loss": 3.016250990331173,
+   "cold_acc": 0.25463104248046875,
+   "tokens_seen": 291632640,
+   "epochs": 0.40005756562668693
+  },
+  "ladder-8m-probe-lr1x": {
+   "lr": 0.00042,
+   "heldout_loss": 2.3852679882774876,
+   "cold_loss": 2.7493247240781784,
+   "cold_acc": 0.2923088073730469,
+   "tokens_seen": 291632640,
+   "epochs": 0.40005756562668693
+  },
+  "ladder-8m-probe-lr2x": {
+   "lr": 0.00084,
+   "heldout_loss": 2.2236253261440564,
+   "cold_loss": 2.590768489986658,
+   "cold_acc": 0.3168144226074219,
+   "tokens_seen": 291632640,
+   "epochs": 0.40005756562668693
+  },
+  "ladder-8m-probe-lr4x": {
+   "lr": 0.00168,
+   "heldout_loss": 2.1245118012918733,
+   "cold_loss": 2.478680182248354,
+   "cold_acc": 0.337158203125,
+   "tokens_seen": 291632640,
+   "epochs": 0.40005756562668693
+  }
  }
 }

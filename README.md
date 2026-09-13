@@ -180,8 +180,8 @@ The ladder itself (2M, 8M, 26M at a fixed 6-frame context, then 6, 12 and 24
 frames of context at 8M, all at a matched 2.9B-token budget) is pre-registered
 in [docs/LADDER_PREREG.md](docs/LADDER_PREREG.md), and every rung is scored by
 `python -m ngx.eval.ladder` on its final checkpoint and the same held-out frames.
-Three seeds of the 2M rung put the ladder's resolution at 0.08 dB. The 8M and
-26M rungs are training.
+Three seeds of the 2M rung put the ladder's resolution at 0.08 dB. The 8M rung
+is scored and 26M is training.
 
 ## Reproducing
 

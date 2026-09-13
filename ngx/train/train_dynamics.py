@@ -36,6 +36,19 @@ Every checkpoint carries ``tokens_seen``, ``windows_seen``, ``epochs`` and
 best-so-far ``dynamics.pt``, a step-numbered ``ckpt_<step>.pt`` is written
 every ``checkpoint_every`` steps so a sync loop pulling the run directory
 loses minutes, not the run, on a preemption.
+
+Resuming
+--------
+Step checkpoints also carry the optimizer state and the plateau bookkeeping,
+so ``--resume`` picks a run back up from its newest ``ckpt_<step>.pt`` on the
+same planned schedule (same horizon, same cosine, same token budget). With no
+step checkpoint present it starts from scratch, so it is safe to always pass.
+The data order after the resume point is a fresh shuffle rather than the
+continuation of the interrupted one; everything that is matched across
+ladder rungs (tokens seen, schedule, batch) is unchanged.
+
+``compile: true`` in the config wraps the training loss in ``torch.compile``.
+The math is the same; it only changes how fast the steps run.
 """
 
 from __future__ import annotations
@@ -83,6 +96,14 @@ def prune_checkpoints(out: str, keep: int) -> None:
             os.remove(path)
         except OSError:
             pass
+
+
+def latest_checkpoint(out: str) -> str | None:
+    """Newest step-numbered checkpoint in ``out``, or ``None``."""
+    import glob
+
+    cks = sorted(glob.glob(os.path.join(out, "ckpt_*.pt")))
+    return cks[-1] if cks else None
 
 
 def build_tokenizer(cfg: dict, device: torch.device) -> tuple[VQVAE, dict]:
@@ -141,6 +162,8 @@ def main() -> None:
     p.add_argument("--config", default="configs/small.yaml")
     p.add_argument("--set", nargs="*", default=[])
     p.add_argument("--device", default="auto")
+    p.add_argument("--resume", action="store_true",
+                   help="continue from the newest ckpt_<step>.pt in the run directory, if any")
     args = p.parse_args()
 
     cfg = load_config(args.config, args.set)
@@ -206,6 +229,34 @@ def main() -> None:
         flush=True,
     )
 
+    start_step = 0
+    best = float("inf")
+    evals_since_best = 0
+    resume_from = latest_checkpoint(out) if args.resume else None
+    if resume_from is not None:
+        # Loaded on the CPU: load_state_dict copies weights and optimizer moments
+        # to the parameters' device and leaves AdamW's step counters on the CPU,
+        # exactly as in a fresh run (on the GPU they cost a host sync per tensor).
+        ck = load_ckpt(resume_from, map_location="cpu")
+        if "optimizer" not in ck:
+            raise ValueError(f"{resume_from} has no optimizer state; it cannot be resumed")
+        model.load_state_dict(ck["model"])
+        opt.load_state_dict(ck["optimizer"])
+        if scaler is not None and ck.get("scaler") is not None:
+            scaler.load_state_dict(ck["scaler"])
+        start_step = int(ck["step"]) + 1
+        best = float(ck.get("best_val", float("inf")))
+        evals_since_best = int(ck.get("evals_since_best", 0))
+        del ck
+        # A new, still seeded, shuffle for the rest of the run.
+        torch.manual_seed(seed * 1_000_003 + start_step)
+        print(f"resumed from {resume_from} at step {start_step:,}/{steps:,} "
+              f"(best val {best:.4f})", flush=True)
+
+    loss_fn = model.loss
+    if cfg.get("compile", False):
+        loss_fn = torch.compile(model.loss)
+
     def extras(step):
         windows = step * dyn["batch_size"]
         return dict(
@@ -217,11 +268,9 @@ def main() -> None:
 
     timer = Timer()
     it = infinite(train_dl)
-    best = float("inf")
-    evals_since_best = 0
     stop_reason = "step cap"
-    step = 0
-    for step in range(steps):
+    step = start_step - 1
+    for step in range(start_step, steps):
         lr = cosine_warmup(step, steps, warmup, dyn["lr"], dyn["lr"] * 0.05)
         for g in opt.param_groups:
             g["lr"] = lr
@@ -229,7 +278,7 @@ def main() -> None:
         tok, act = next(it)
         tok, act = tok.to(device, non_blocking=True), act.to(device, non_blocking=True)
         with autocast:
-            loss, stats = model.loss(tok, act)
+            loss, stats = loss_fn(tok, act)
         opt.zero_grad(set_to_none=True)
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -246,12 +295,9 @@ def main() -> None:
             print(
                 f"step {step:6d}/{steps} loss {stats['loss']:.4f} "
                 f"masked_acc {stats['token_acc']:.3f} lr {lr:.2e} "
-                f"| {timer.rate(step + 1):.2f} it/s",
+                f"| {timer.rate(step + 1 - start_step):.2f} it/s",
                 flush=True,
             )
-        if step and step % ckpt_every == 0:
-            save_ckpt(os.path.join(out, f"ckpt_{step:07d}.pt"), model, cfg, **extras(step))
-            prune_checkpoints(out, int(dyn.get("keep_checkpoints", 3)))
         if step and step % eval_every == 0:
             vl, ma, ca = evaluate(model, val_dl, device)
             sample_grid(model, vq, val_ds, device, os.path.join(out, f"pred_{step:06d}.png"))
@@ -269,6 +315,14 @@ def main() -> None:
                 if patience and evals_since_best >= patience:
                     stop_reason = f"plateau ({patience} evals without {min_delta} improvement)"
                     break
+        # After the eval, so a resumed run inherits this step's plateau state.
+        if step and step % ckpt_every == 0:
+            save_ckpt(os.path.join(out, f"ckpt_{step:07d}.pt"), model, cfg,
+                      optimizer=opt.state_dict(),
+                      scaler=scaler.state_dict() if scaler is not None else None,
+                      best_val=best, evals_since_best=evals_since_best,
+                      **extras(step))
+            prune_checkpoints(out, int(dyn.get("keep_checkpoints", 3)))
     else:
         stop_reason = ("token budget" if token_budget
                        and (steps * batch_tokens) >= token_budget else "step cap")
@@ -284,7 +338,8 @@ def main() -> None:
               val_loss=vl, cold_acc=ca, **extras(step + 1))
     e = extras(step + 1)
     print(
-        f"stopped: {stop_reason} | {timer.elapsed / 60:.1f} min | "
+        f"stopped: {stop_reason} | {timer.elapsed / 60:.1f} min"
+        + (f" since resume at step {start_step:,}" if start_step else "") + " | "
         f"val loss {vl:.4f} (best {min(best, vl):.4f}) | masked acc {ma:.3f} | "
         f"cold acc {ca:.3f} | tokens {e['tokens_seen']:,} | epochs {e['epochs']:.2f} | "
         f"saved {os.path.join(out, 'dynamics.pt')}"

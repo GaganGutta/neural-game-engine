@@ -51,8 +51,12 @@ def infinite(loader):
 
 
 def save_ckpt(path: str, model: torch.nn.Module, cfg: dict, **extra) -> None:
+    """Write atomically: a crash mid-save never leaves a truncated checkpoint
+    where ``--resume`` or a sync pull would pick it up."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    torch.save({"model": model.state_dict(), "cfg": cfg, **extra}, path)
+    tmp = path + ".tmp"
+    torch.save({"model": model.state_dict(), "cfg": cfg, **extra}, tmp)
+    os.replace(tmp, path)
 
 
 def load_ckpt(path: str, map_location="cpu") -> dict:

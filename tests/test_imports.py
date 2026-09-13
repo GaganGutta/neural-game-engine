@@ -36,6 +36,8 @@ ENTRY_POINTS = [
     "ngx.eval.coverage",
     "ngx.eval.decode_quality",
     "ngx.eval.action_ablation",
+    "ngx.eval.heldout",
+    "ngx.eval.ladder",
 ]
 
 

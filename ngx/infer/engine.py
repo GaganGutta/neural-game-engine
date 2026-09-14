@@ -177,7 +177,7 @@ class NeuralGameEngine:
         attached to the wrong embedding. Under rope a cached key keeps its own
         absolute rotation and a later query only ever sees the relative offset,
         so extending the cache by one block is exactly equal to recomputing the
-        whole prefix -- ``tests/test_dynamics.py`` asserts this to 1e-7.
+        whole prefix -- ``tests/test_dynamics.py`` asserts this to 1e-4.
 
         What rope does *not* fix is eviction. When the oldest block drops off
         the front, every retained block still carries the history it computed

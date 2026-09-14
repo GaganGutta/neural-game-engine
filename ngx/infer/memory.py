@@ -1,7 +1,7 @@
 """Retrieval memory, the drift countermeasure.
 
-The failure this exists to fix: with an 8-frame sliding context, everything the
-model knew about a room is gone eight frames after you leave it. Walk out and
+The failure this exists to fix: with a 6-frame sliding context, everything the
+model knew about a room is gone six frames after you leave it. Walk out and
 walk back and the room is regenerated from scratch -- usually as a different
 room. The rollout stays *plausible* while ceasing to be *consistent*, which is
 the characteristic way world models fail.

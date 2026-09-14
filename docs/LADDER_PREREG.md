@@ -180,6 +180,20 @@ and every drift rollout starts there.
 All existing rows are rescored under this protocol, including the three 2M
 seeds, so the resolution is measured again before any rung is compared with it.
 
+## Clarifications of 2026-09-14, after the ladder ran
+
+Wording only. No rule, rung, budget or reading changes.
+
+- The 29.53 dB ceiling quoted under *The ladder* has no committed source.
+  Headroom is computed against the tokenizer round trip on the same moving
+  windows as the model, which under the 2026-09-13 protocol is 30.97 dB (see
+  [LADDER.md](LADDER.md)).
+- "All T\* numbers are at 4 epochs by construction" holds at a 6-frame
+  context. The budget is matched in tokens, so longer-context rungs see
+  proportionally fewer windows: 2.03 epochs at 12 frames.
+- The capacity rung written as 30M above is the 26M config (d_model 512,
+  8 layers, 25.7M parameters).
+
 ## What is not pre-registered
 
 Anything not written above. If a rung produces something surprising outside

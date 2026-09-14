@@ -1,7 +1,7 @@
 # Cache carrying across frame boundaries: exactness chosen as the default
 
 Under rope, extending the KV cache by one block is exactly equal to recomputing
-the whole prefix (asserted to 1e-7 in `tests/test_dynamics.py`). What is not
+the whole prefix (asserted to 1e-4 in `tests/test_dynamics.py`). What is not
 exact is eviction: when the window slides, every retained block still carries
 history it computed while the now-dropped block was visible, which a fresh
 recompute would not give it. Measured on rollouts from matched starts with

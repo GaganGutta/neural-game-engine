@@ -14,7 +14,8 @@ data:
   preload: true
 
 # The ladder reuses the tokenizer trained under the 'small' run (all 2M frames
-# were tokenized with it; 29.53 dB ceiling, all 512 codes live).
+# were tokenized with it; its round-trip ceiling on the ladder's moving
+# held-out transitions is 30.97 dB, see docs/LADDER.md).
 tokenizer_ckpt: checkpoints/small/vqvae.pt
 
 tokenizer:            # architecture record only; weights come from tokenizer_ckpt
@@ -41,7 +42,7 @@ dynamics:
   dropout: 0.0
   pos_encoding: rope
   batch_size: 64
-  lr: 4.2e-4
+  lr: 1.68e-3          # 8M probe winner, pre-registered anchor 4.2e-4; docs/LADDER.md
   warmup: 1000
   # T* = 4 epochs of the 2M-frame set (tokens = windows x context x 65); the
   # trainer derives the step count from this and plans the cosine over it.

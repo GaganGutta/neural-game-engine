@@ -42,8 +42,8 @@ dynamics:
   steps: 6500
   lr: 6.0e-4          # short schedule, so push the LR harder than the usual 3e-4
   warmup: 300
-  # Fraction of steps trained with the MaskGIT objective rather than pure
-  # next-frame teacher forcing. Both share one set of weights.
+  # Unused: no code reads this key. Every step trains the single cosine-masked
+  # objective (DynamicsTransformer.loss), which serves both decoders.
   maskgit_frac: 0.5
 
 infer:
@@ -59,15 +59,15 @@ infer:
   carry_cache: false
 
 memory:
-  # Off by default, and docs/DRIFT.md explains why: on this CPU-scale checkpoint
-  # it moves return-to-place consistency by less than the run-to-run spread.
-  # Retrieval finds the right room ~80% of the time; the model is simply too
-  # small to use a distant context slot. Toggle it live with M in play.py.
+  # Off by default; docs/DRIFT.md and docs/DRIFT_26M.md explain why: on both the
+  # shipped 2M checkpoint and the 26M ladder rung it moves return-to-place by less
+  # than the run-to-run spread. At a revisit the most similar stored frame is from
+  # the same spot only 11% of the time (17% for the top two). Toggle it live with
+  # M in play.py.
   enabled: false
   capacity: 4096
   k: 2
-  # Cosine similarity on mean codebook embeddings. Measured on the reference
-  # trajectory: matched revisits average 0.96, random pairs 0.47.
+  # Cosine similarity on mean codebook embeddings.
   min_sim: 0.9
   write_every: 4
   exclude_recent: 64   # ignore the last N writes; the recent past is already in context

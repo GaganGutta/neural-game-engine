@@ -53,7 +53,7 @@ objective:
 * **raster**: reveal one token per pass, left to right. 64 passes. This is the
   autoregressive baseline.
 * **MaskGIT**: every pass predicts all remaining slots, keep the most
-  confident ones, repeat. 8 passes.
+  confident ones, repeat. 4 passes in the shipped configs.
 
 They are the same weights on the same mask, which is what makes the speed
 comparison in [BENCHMARKS.md](BENCHMARKS.md) fair. If the fast path needed its
@@ -64,12 +64,13 @@ decoders.
 
 During the decoding of one frame, stream A does not change. Only the target
 block does. So stream A's keys and values are computed once per frame and
-reused across all 8 (or 64) passes. Each pass then runs 64 query positions
-against a cached prefix instead of ~1000 positions from scratch.
+reused across all 4 (or 64) passes. Each pass then runs 64 query positions
+against a cached 390-position prefix instead of recomputing that prefix on
+every pass.
 
 This is exact, not approximate, and the benchmark proves it rather than
 asserting it: the cached and uncached rows produce bit-identical rollouts under
-greedy decoding, which shows up in the table as an infinite PSNR.
+greedy decoding, which shows up in the table as `identical` (an infinite PSNR).
 
 `tests/test_dynamics.py` pins the same property at the logit level: the
 training forward pass and the cached inference path must agree to 1e-4. Without
@@ -155,26 +156,27 @@ it used.
 Three things did not go the way the design assumed. All three are in the docs
 with numbers attached rather than quietly fixed.
 
-**Retrieval memory does not help, and the retrieval is why.** At 2M it is a
+**Retrieval memory does not help, and the retrieval itself is weak.** At 2M it is a
 wash: -0.69 dB on return-to-place against a +/-1.03 dB run-to-run spread. The
 first version of this evaluation ran one rollout per configuration and showed
 memory winning; four seeds showed that the win was the seed. I first blamed the
 model, arguing that a 2.0M-parameter model leans too hard on the most recent
-frame to use a distant context slot. The 26M checkpoint undercuts that: memory
-is still not measurable there (-0.64 dB against +/-1.69 dB). Measuring the key
-directly explains both. At a genuine revisit, the most similar stored frame was
+frame to use a distant context slot. The 26M checkpoint cannot settle that
+either way: its sliding context alone already scores 11.24 dB against the
+game's own 11.25 dB, so there is no gap for memory to close, and memory is
+again not measurable (-0.64 dB against +/-1.69 dB). Measuring the key directly
+points at a problem that holds at both scales. At a genuine revisit, the most similar stored frame was
 taken at the same place only 11% of the time, and one of the top two 17% of
-the time, so most retrievals put a different room into context. See
+the time, so at most revisits neither of the two best matches in memory was taken at
+that place. See
 [DRIFT.md](DRIFT.md) and [DRIFT_26M.md](DRIFT_26M.md).
 
 **The retrieval key had to change, and it is still the weak link.** The
 original bag-of-codes histogram scored matched revisits too low for a
 similarity threshold to mean anything. Mean-pooled codebook embeddings fixed
 the *scale* by using the metric structure the codebook already learned. They
-did not fix the *ranking*: in a maze built from a handful of repeated textures,
-many places look alike on average, and the most similar stored frame is usually
-from somewhere else. A geometry-aware key is the next thing to try, not a
-bigger model.
+did not fix the *ranking*: at a revisit the most similar stored frame is
+usually from somewhere else. A geometry-aware key is the next thing to try.
 
 **More decoding passes buy nothing here.** The premise of stage 4 was that
 MaskGIT trades quality for speed and the job is finding the sweet spot. On this
@@ -182,8 +184,10 @@ checkpoint there is no trade to make: PSNR drifts slightly *down* from 1 pass to
 64, and sharpness is flat at ~0.52x the real frame's detail across every pass
 count. The blur is not coming from the decoder, so no decoding schedule can fix
 it. I initially wrote that sharpness would rise with pass count; it does not,
-and [DECODE.md](DECODE.md) says so. `maskgit_steps` is 4 because 4 is where the
-measurements stop moving, not because 8 sounded right.
+and [DECODE.md](DECODE.md) says so. `maskgit_steps` is 4 because extra
+passes buy nothing measurable on this checkpoint, so more of them would only
+cost latency. That sweep is from the 2M checkpoint and has not been re-run at
+26M.
 
 What did work as designed: the KV cache is exactly what it claims to be
 (bit-identical rollouts, 6.3x), and MaskGIT over raster is an 8.6x win on top
@@ -196,7 +200,7 @@ where at 2M they did not. See [BENCHMARKS.md](BENCHMARKS.md) and
 
 * The shipped checkpoint was trained on a laptop CPU. It is far below the scale
   in `configs/full.yaml`, and it looks like it: expect a recognisable but soft
-  world that drifts within a few hundred frames. The pipeline, not the
+  world that drifts off the real game within about 50 frames. The pipeline, not the
   checkpoint, is the artifact.
 * int8 dynamic quantisation is CPU-only here. The GPU equivalent is a different
   toolchain (torchao, bitsandbytes, TensorRT) and is not implemented.

@@ -14,7 +14,8 @@ data:
   preload: true
 
 # The ladder reuses the tokenizer trained under the 'small' run (all 2M frames
-# were tokenized with it; 29.53 dB ceiling, all 512 codes live).
+# were tokenized with it; its round-trip ceiling on the ladder's moving
+# held-out transitions is 30.97 dB, see docs/LADDER.md).
 tokenizer_ckpt: checkpoints/small/vqvae.pt
 
 tokenizer:            # architecture record only; weights come from tokenizer_ckpt

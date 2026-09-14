@@ -17,7 +17,10 @@ real game's own PSNR between those two moments, which is below infinity because
 "same pose" is a tolerance, not an identity. The control is the ceiling; the
 model's score only means something relative to it.
 
-Writes docs/DRIFT.md comparing memory on against memory off.
+Writes docs/DRIFT.md comparing memory on against memory off, plus how often the
+memory key retrieves a frame of the same place at a genuine revisit. Every
+sentence in the report is computed from this run; none is carried over from
+an earlier checkpoint.
 """
 
 from __future__ import annotations
@@ -144,7 +147,55 @@ def evaluate(engine, frames, actions, poses, steps: int, pairs=None):
     }
 
 
+def retrieval_accuracy(vq, frames, poses, pairs, device, write_every: int, exclude_recent: int,
+                       pos_tol: float, ang_tol: float, batch: int = 256) -> dict:
+    """How often the memory key finds the room at a genuine revisit.
+
+    Tokenizer-only: keys are built from the real frames exactly as
+    :class:`RetrievalMemory` builds them, so the answer is the same for every
+    dynamics checkpoint that shares this tokenizer. For each revisit pair
+    ``(i, j)`` the candidates are the real frames memory would hold at step
+    ``j``: every ``write_every``-th frame before ``j``, minus the most recent
+    ``exclude_recent`` writes. A retrieval is correct when the stored frame was
+    taken within the revisit tolerance of frame ``j``'s pose. Pairs with no
+    correct candidate in memory are left out and counted separately.
+    """
+    from .baselines import encode
+
+    E = vq.quantizer.embed.detach().float().to(device)
+    toks = torch.cat([encode(vq, frames[s:s + batch], device) for s in range(0, len(frames), batch)])
+    keys = E[toks.long()].mean(1)
+    keys = keys / keys.norm(dim=1, keepdim=True).clamp_min(1e-8)
+    stored = np.arange(write_every - 1, len(frames), write_every)
+    finite = np.isfinite(poses).all(1)
+
+    n = top1 = top2 = no_candidate = 0
+    for _i, j in pairs:
+        cand = stored[stored < j]
+        cand = cand[: max(len(cand) - exclude_recent, 0)]
+        if len(cand) == 0 or not finite[j]:
+            no_candidate += 1
+            continue
+        dpos = np.linalg.norm(poses[cand, :2] - poses[j, :2], axis=1)
+        dang = np.abs(poses[cand, 2] - poses[j, 2]) % 360.0
+        dang = np.minimum(dang, 360.0 - dang)
+        ok = finite[cand] & (dpos <= pos_tol) & (dang <= ang_tol)
+        if not ok.any():
+            no_candidate += 1
+            continue
+        sims = (keys[torch.as_tensor(cand, device=device)] @ keys[j]).cpu().numpy()
+        order = np.argsort(-sims)
+        n += 1
+        top1 += int(ok[order[0]])
+        top2 += int(ok[order[:2]].any())
+    return {"pairs": n, "no_candidate": no_candidate,
+            "top1": top1 / max(n, 1), "top2": top2 / max(n, 1)}
+
+
 def main() -> None:
+    from ..config import find_ckpt
+    from ..train.common import load_ckpt
+
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--config", default="configs/small.yaml")
     p.add_argument("--set", nargs="*", default=[])
@@ -168,15 +219,28 @@ def main() -> None:
     frames, actions, poses, used_seed = reference_trajectory(cfg, a.steps + 64, a.seed)
     print(f"  got {len(frames)} frames from seed {used_seed}")
 
+    probe = load_engine(cfg, device=device, memory=False)
+    ctx = probe.C
+    ckpt_path = find_ckpt(cfg, "dynamics", "dynamics.pt")
+    ck = load_ckpt(ckpt_path, map_location="cpu")
+    params = sum(q.numel() for q in probe.model.parameters())
+
     # Find the revisit pairs once, so both configurations are scored on exactly
     # the same moments.
-    ctx = load_config(a.config, a.set)["dynamics"]["context"]
     pairs = find_revisits(poses, start=ctx, min_gap=a.min_gap,
                           pos_tol=a.pos_tol, ang_tol=a.ang_tol)
     gaps = [j - i for i, j in pairs]
-    print(
-        f"  {len(pairs)} revisit pairs (median gap {int(np.median(gaps)) if gaps else 0} frames)"
-    )
+    print(f"  {len(pairs)} revisit pairs (median gap {int(np.median(gaps)) if gaps else 0} frames)")
+
+    mc = cfg.get("memory", {})
+    write_every = int(mc.get("write_every", 4))
+    exclude_recent = int(mc.get("exclude_recent", 64))
+    ret = retrieval_accuracy(probe.vq, frames, poses, pairs, device, write_every, exclude_recent,
+                             a.pos_tol, a.ang_tol)
+    print(f"  memory key finds the place: top-1 {100 * ret['top1']:.0f}%, top-2 "
+          f"{100 * ret['top2']:.0f}% over {ret['pairs']} revisits "
+          f"({ret['no_candidate']} with no matching frame in memory)")
+    del probe
 
     results = {}
     for use_mem in (False, True):
@@ -209,15 +273,24 @@ def main() -> None:
             f"retrieval fired on {agg['hits']:.0f}/{agg['frames']} frames"
         )
 
+    trained = ""
+    if ck.get("tokens_seen"):
+        trained = f", trained on {ck['tokens_seen'] / 1e9:.2f}B tokens ({ck.get('epochs', 0):.2f} epochs)"
+    regen = " ".join(["python -m ngx.eval.drift --config", a.config]
+                     + (["--set", *a.set] if a.set else [])
+                     + ([f"--out {a.out}"] if a.out != "docs/DRIFT.md" else []))
+
     ks = [k for k in CHECKPOINTS if k <= min(r["frames"] for r in results.values())]
     lines = [
         "# Drift",
         "",
+        f"Checkpoint: `{ckpt_path.replace(os.sep, '/')}`, {params / 1e6:.1f}M parameters, "
+        f"{ctx}-frame context{trained}.",
+        "",
         f"Reference trajectory: {len(frames)} real frames from one unbroken episode, "
         f"explorer policy, env seed {used_seed}. Every number below is the mean over "
         f"{a.seeds} rollouts with different sampling seeds, +/- one standard deviation. "
-        "Decoding samples, so a single rollout cannot tell an effect from noise -- and "
-        "on this checkpoint, the difference between the two configurations is noise.",
+        "Decoding samples, so a single rollout cannot tell an effect from noise.",
         "",
         "## Divergence from the real game",
         "",
@@ -237,7 +310,7 @@ def main() -> None:
         "",
         f"Pairs of steps where the real player stood within {a.pos_tol:g} map units and "
         f"{a.ang_tol:g} degrees of a pose from at least {a.min_gap} steps earlier "
-        f"(median actual gap: {int(np.median(gaps)) if gaps else 0} frames -- far outside "
+        f"(median actual gap: {int(np.median(gaps)) if gaps else 0} frames, far outside "
         f"the model's {ctx}-frame context, so nothing but memory can carry the room "
         f"across). `game` is the same measurement on the real frames: the ceiling, since "
         f"matching poses are close but never identical.",
@@ -256,39 +329,38 @@ def main() -> None:
     base, mem = results["sliding context only"], results["memory"]
     delta = mem["revisit_mean"] - base["revisit_mean"]
     pooled = (base["revisit_sd"] ** 2 + mem["revisit_sd"] ** 2) ** 0.5
+    if abs(delta) <= pooled:
+        verdict = (f"**Retrieval memory does not measurably change return-to-place on this "
+                   f"checkpoint.** It moves the score by {delta:+.2f} dB against a run-to-run "
+                   f"spread of +/-{pooled:.2f} dB.")
+    elif delta > 0:
+        verdict = (f"**Retrieval memory improves return-to-place by {delta:.2f} dB**, outside "
+                   f"the run-to-run spread of +/-{pooled:.2f} dB.")
+    else:
+        verdict = (f"**Retrieval memory makes return-to-place worse by {-delta:.2f} dB**, "
+                   f"outside the run-to-run spread of +/-{pooled:.2f} dB.")
     lines += [
         "",
         "## What this says",
         "",
-        f"**Retrieval memory does not help at this scale.** It moves the return-to-place "
-        f"score by {delta:+.2f} dB against a run-to-run spread of +/-{pooled:.2f} dB, which "
-        f"is to say it does not move it. Reporting the single best seed would have shown "
-        f"an improvement; four seeds show that improvement was the seed.",
+        verdict,
         "",
-        "Two things are worth separating here, because only one of them is a dead end.",
+        f"*Does the key find the place?* For {ret['pairs']} of the revisits, memory holds at "
+        f"least one frame taken within the revisit tolerance of the current pose. The most "
+        f"similar stored frame is one of them {100 * ret['top1']:.0f}% of the time, and one of "
+        f"the top two is {100 * ret['top2']:.0f}% of the time. For the other "
+        f"{ret['no_candidate']} revisits nothing from that place is in memory yet. Keys come "
+        f"from the tokenizer alone, so these rates are the same for every dynamics checkpoint "
+        f"that shares it.",
         "",
-        "*Retrieval itself works.* On the reference trajectory the correct past frame is "
-        "the top-ranked match for 55% of genuine revisits and in the top two for ~80%. "
-        "The mechanism finds the room.",
+        f"`memory.enabled` is `{str(bool(mc.get('enabled', False))).lower()}` in this config; "
+        "the `M` key toggles it in `play.py`.",
         "",
-        "*The model cannot use it.* At 2.0M parameters and under one pass over the data, "
-        "predictions are dominated by the most recent frame; replacing a distant context "
-        "slot with a remembered one perturbs an input the model is barely conditioning on. "
-        "The ~45% of retrievals that surface the wrong room then cost roughly what the "
-        "right ones gain, which is exactly the wash the table shows.",
+        f"One structural note on the curve: `exclude_recent` blocks retrieval until "
+        f"{exclude_recent} writes have accumulated (one every {write_every} frames), so the two "
+        "configurations are identical by construction for the first few hundred frames.",
         "",
-        "So `memory.enabled` ships as `false`. The feature stays in the codebase and on "
-        f"the `M` key, because the premise it is built on -- that a {ctx}-frame context "
-        "cannot hold a room you left 500 frames ago -- is unchanged, and a model with enough "
-        "capacity to exploit distant context is the obvious thing to re-test it against. "
-        "Claiming it as a win on this checkpoint would just be reporting noise.",
-        "",
-        "One structural note on the curve above: `exclude_recent` blocks retrieval until "
-        f"{cfg['memory'].get('exclude_recent', 64)} writes have accumulated, so the two "
-        "configurations are identical by construction for the first few hundred frames. "
-        "The early columns matching exactly is expected, not a bug.",
-        "",
-        "Regenerate with `python -m ngx.eval.drift --config configs/small.yaml`.",
+        f"Regenerate with `{regen}`.",
         "",
     ]
 

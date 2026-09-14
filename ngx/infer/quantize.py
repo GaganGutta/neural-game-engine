@@ -25,10 +25,20 @@ def quantize_int8(model: nn.Module) -> nn.Module:
 
 
 def weight_bytes(model: nn.Module) -> int:
-    """Bytes held by parameters, counting quantised Linear layers correctly."""
+    """Bytes held by parameters, counting quantised Linear layers correctly.
+
+    A dynamically quantised Linear keeps its weight and bias in packed params,
+    not in ``parameters()``, and its class is plain ``Linear``: only
+    ``_get_name()`` says ``DynamicQuantizedLinear``. Matching on the class name
+    silently left every int8 weight out of the total.
+    """
     total = sum(p.numel() * p.element_size() for p in model.parameters())
     for m in model.modules():
-        if m.__class__.__name__.startswith("DynamicQuantizedLinear"):
+        name = m._get_name() if hasattr(m, "_get_name") else m.__class__.__name__
+        if name.startswith("DynamicQuantizedLinear"):
             w = m.weight()
             total += w.numel() * w.element_size()
+            b = m.bias()
+            if b is not None:
+                total += b.numel() * b.element_size()
     return total

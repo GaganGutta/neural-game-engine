@@ -163,10 +163,9 @@ it.
 
 The 2.0M CPU checkpoint above was trained on 150k frames for under one epoch.
 The same architecture trained for 16 epochs on a 2M-frame set, on a rented
-RTX 4090, is the current best checkpoint (`ladder-2m-s0` in
-[docs/LADDER.md](docs/LADDER.md): one-step PSNR on moving transitions 27.74 dB
-against a 30.97 dB tokenizer ceiling on the same frames, 65% of the headroom
-over copy-last-frame).
+RTX 4090, reaches 27.74 dB one-step PSNR on moving transitions (`ladder-2m-s0`
+in [docs/LADDER.md](docs/LADDER.md), against a 30.97 dB tokenizer ceiling on the
+same frames, 65% of the headroom over copy-last-frame).
 
 ![2M model after 16 epochs, closed loop](assets/demo_2m16.gif)
 
@@ -180,8 +179,9 @@ The ladder itself (2M, 8M, 26M at a fixed 6-frame context, then 6, 12 and 24
 frames of context at 8M, all at a matched 2.9B-token budget) is pre-registered
 in [docs/LADDER_PREREG.md](docs/LADDER_PREREG.md), and every rung is scored by
 `python -m ngx.eval.ladder` on its final checkpoint and the same held-out frames.
-Three seeds of the 2M rung put the ladder's resolution at 0.08 dB. The 8M rung
-is scored and 26M is training.
+Three seeds of the 2M rung put the ladder's resolution at 0.08 dB. At the same
+2.9B tokens, headroom captured goes 58% at 2M, 70% at 8M and 83% at 26M. The
+context rungs are training.
 
 ## Reproducing
 

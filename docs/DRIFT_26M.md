@@ -1,6 +1,6 @@
 # Drift
 
-Checkpoint: `runs/small/dynamics/dynamics.pt`, 2.0M parameters, 6-frame context.
+Checkpoint: `runs/ladder-26m-t4-s0/dynamics/final.pt`, 25.7M parameters, 6-frame context, trained on 2.92B tokens (4.00 epochs).
 
 Reference trajectory: 1064 real frames from one unbroken episode, explorer policy, env seed 1. Every number below is the mean over 4 rollouts with different sampling seeds, +/- one standard deviation. Decoding samples, so a single rollout cannot tell an effect from noise.
 
@@ -10,8 +10,8 @@ PSNR between the model's frame and the game's frame at step *k*, both driven by 
 
 | config | k=1 | k=10 | k=25 | k=50 | k=100 | k=250 | k=500 | k=1000 |
 |---|---|---|---|---|---|---|---|---|
-| sliding context only | 16.2 | 14.2 | 13.1 | 10.6 | 10.6 | 13.2 | 9.1 | 7.9 |
-| memory | 16.2 | 14.2 | 13.1 | 10.6 | 10.6 | 13.2 | 8.7 | 8.6 |
+| sliding context only | 30.5 | 20.6 | 13.8 | 11.3 | 10.5 | 12.7 | 10.6 | 11.7 |
+| memory | 30.5 | 20.6 | 13.8 | 11.3 | 10.5 | 12.7 | 11.2 | 9.2 |
 
 ## Return-to-place consistency
 
@@ -19,12 +19,12 @@ Pairs of steps where the real player stood within 40 map units and 20 degrees of
 
 | config | pairs | model | game (ceiling) | gap | retrieval fired |
 |---|---|---|---|---|---|
-| sliding context only | 40 | **9.89 +/- 0.54 dB** | 11.25 dB | 1.36 dB | 0/1000 frames |
-| memory | 40 | **9.20 +/- 0.88 dB** | 11.25 dB | 2.05 dB | 497/1000 frames |
+| sliding context only | 40 | **11.24 +/- 1.57 dB** | 11.25 dB | 0.01 dB | 0/1000 frames |
+| memory | 40 | **10.60 +/- 0.63 dB** | 11.25 dB | 0.64 dB | 590/1000 frames |
 
 ## What this says
 
-**Retrieval memory does not measurably change return-to-place on this checkpoint.** It moves the score by -0.69 dB against a run-to-run spread of +/-1.03 dB.
+**Retrieval memory does not measurably change return-to-place on this checkpoint.** It moves the score by -0.64 dB against a run-to-run spread of +/-1.69 dB.
 
 *Does the key find the place?* For 36 of the revisits, memory holds at least one frame taken within the revisit tolerance of the current pose. The most similar stored frame is one of them 11% of the time, and one of the top two is 17% of the time. For the other 4 revisits nothing from that place is in memory yet. Keys come from the tokenizer alone, so these rates are the same for every dynamics checkpoint that shares it.
 
@@ -32,4 +32,4 @@ Pairs of steps where the real player stood within 40 map units and 20 degrees of
 
 One structural note on the curve: `exclude_recent` blocks retrieval until 64 writes have accumulated (one every 4 frames), so the two configurations are identical by construction for the first few hundred frames.
 
-Regenerate with `python -m ngx.eval.drift --config configs/small.yaml`.
+Regenerate with `python -m ngx.eval.drift --config configs/ladder/26m.yaml --set name=ladder-26m-t4-s0 dynamics_ckpt=runs/ladder-26m-t4-s0/dynamics/final.pt --out docs/DRIFT_26M.md`.

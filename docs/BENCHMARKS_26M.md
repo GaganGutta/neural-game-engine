@@ -11,13 +11,13 @@ Each row applies one change on top of the fastest configuration so far. A change
 
 | step | fps | ms/frame | passes/frame | vs. row 1 | weights | peak mem | output delta | |
 |---|---|---|---|---|---|---|---|---|
-| raster AR, no KV cache | **0.09** | 10595.9 | 64 | 1.0x | 102.9 MB | 496 MB | identical | kept |
-| + KV cache (within frame) | **0.60** | 1668.4 | 64 | 6.4x | 102.9 MB | 510 MB | identical | kept |
-| + MaskGIT parallel decode | **5.55** | 180.0 | 4 | 58.8x | 102.9 MB | 504 MB | 13.7 dB | kept |
-| + carry KV cache across frames | **7.87** | 127.0 | 4 | 83.4x | 102.9 MB | 519 MB | 16.1 dB | kept |
-| + bf16 autocast | **9.29** | 107.7 | 4 | 98.4x | 102.9 MB | 576 MB | 14.2 dB | kept |
+| raster AR, no KV cache | **0.09** | 10552.2 | 64 | 1.0x | 102.9 MB | 496 MB | identical | kept |
+| + KV cache (within frame) | **0.60** | 1659.0 | 64 | 6.4x | 102.9 MB | 509 MB | identical | kept |
+| + MaskGIT parallel decode | **5.53** | 180.8 | 4 | 58.4x | 102.9 MB | 504 MB | 13.7 dB | kept |
+| + carry KV cache across frames | **7.89** | 126.8 | 4 | 83.2x | 102.9 MB | 519 MB | 16.1 dB | kept |
+| + bf16 autocast | **9.34** | 107.1 | 4 | 98.6x | 102.9 MB | 574 MB | 14.2 dB | kept |
 | + torch.compile | unavailable | | | | | | | _RuntimeError: Compiler: cl is not found._ |
-| + int8 dynamic quant | **10.56** | 94.7 | 4 | 111.9x | 26.7 MB | 848 MB | 12.1 dB | kept |
+| + int8 dynamic quant | **10.87** | 92.0 | 4 | 114.7x | 26.7 MB | 835 MB | 12.1 dB | kept |
 
 `peak mem` is process RSS on CPU and peak allocated VRAM on CUDA; on CPU it includes the interpreter and both models, so treat it as an envelope rather than a model footprint. `weights` is the dynamics model's parameter bytes.
 

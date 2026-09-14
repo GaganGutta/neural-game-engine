@@ -11,13 +11,13 @@ Each row applies one change on top of the fastest configuration so far. A change
 
 | step | fps | ms/frame | passes/frame | vs. row 1 | weights | peak mem | output delta | |
 |---|---|---|---|---|---|---|---|---|
-| raster AR, no KV cache | **0.65** | 1546.6 | 64 | 1.0x | 8.0 MB | 286 MB | identical | kept |
-| + KV cache (within frame) | **4.00** | 249.9 | 64 | 6.2x | 8.0 MB | 281 MB | identical | kept |
-| + MaskGIT parallel decode | **34.20** | 29.2 | 4 | 52.9x | 8.0 MB | 292 MB | 14.3 dB | kept |
+| raster AR, no KV cache | **0.65** | 1540.6 | 64 | 1.0x | 8.0 MB | 286 MB | identical | kept |
+| + KV cache (within frame) | **4.11** | 243.3 | 64 | 6.3x | 8.0 MB | 282 MB | identical | kept |
+| + MaskGIT parallel decode | **35.47** | 28.2 | 4 | 54.7x | 8.0 MB | 292 MB | 14.3 dB | kept |
 | + carry KV cache across frames | unavailable | | | | | | | _checkpoint uses absolute positions_ |
-| + bf16 autocast | **26.52** | 37.7 | 4 | 41.0x | 8.0 MB | 295 MB | 16.2 dB | reverted |
+| + bf16 autocast | **27.18** | 36.8 | 4 | 41.9x | 8.0 MB | 295 MB | 16.2 dB | reverted |
 | + torch.compile | unavailable | | | | | | | _RuntimeError: Compiler: cl is not found._ |
-| + int8 dynamic quant | **28.86** | 34.6 | 4 | 44.6x | 2.4 MB | 441 MB | 14.6 dB | reverted |
+| + int8 dynamic quant | **28.72** | 34.8 | 4 | 44.2x | 2.4 MB | 441 MB | 14.6 dB | reverted |
 
 `peak mem` is process RSS on CPU and peak allocated VRAM on CUDA; on CPU it includes the interpreter and both models, so treat it as an envelope rather than a model footprint. `weights` is the dynamics model's parameter bytes.
 

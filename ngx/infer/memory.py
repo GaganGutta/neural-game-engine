@@ -12,21 +12,17 @@ length is unchanged, so the model sees exactly the block layout it was trained
 on and needs no retraining.
 
 Keys are the mean of the *codebook embedding vectors* of a frame's tokens,
-L2-normalised and compared by cosine similarity. The obvious alternative -- a
-bag-of-codes histogram over the 512 codebook entries -- was tried first and
-measured worse in the way that mattered: it ranks about as well, but two frames
-of the same wall from slightly different angles land on different-but-adjacent
-codes, which a histogram scores as *no* overlap at all. Measured on the
-reference trajectory, matched revisits averaged 0.34 similarity against 0.09
-for random pairs, so any threshold high enough to sound like "similar" fired on
-nothing. Averaging the embeddings instead uses the metric structure the
-codebook already learned: revisits average 0.96 against 0.47 for random pairs,
-and a 0.9 threshold means what it looks like it means.
+L2-normalised and compared by cosine similarity. A bag-of-codes histogram over
+the 512 codebook entries was tried first: two frames of the same wall seen from
+slightly different angles land on different-but-adjacent codes, which a
+histogram scores as no overlap at all, so its similarities sat far below any
+usable threshold. Averaging the embeddings uses the metric structure the
+codebook already learned.
 
-Mean-pooling over the whole frame, rather than pooling spatially, is also
-measured: a 2x2 spatial key dropped top-1 retrieval accuracy from 0.55 to 0.14,
-because turning your head moves content across the grid and a spatially-aware
-key reads that as a different place.
+Separating revisits from random pairs on average is not the same as ranking
+the right place first among hundreds of similar-looking maze frames, and this
+key mostly does not. ``python -m ngx.eval.drift`` measures how often the most
+similar stored frame was taken at the same place; see DRIFT.md.
 """
 
 from __future__ import annotations

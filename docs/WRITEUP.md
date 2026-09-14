@@ -84,11 +84,10 @@ Walk out, walk back, and the room is regenerated from nothing, usually as a
 *different* room. The rollout stays plausible while ceasing to be consistent.
 That is the characteristic failure, and it is not fixed by training longer.
 
-The countermeasure is a retrieval memory keyed on the bag-of-codes histogram of
-a frame: which codebook entries appear in it, L2-normalised, compared by cosine
-similarity. It works because the tokenizer already spends different codes on
-different wall textures, which is precisely what distinguishes one room in this
-maze from another. No extra network, no extra training.
+The countermeasure is a retrieval memory keyed on a frame's mean codebook
+embedding: the average of the embedding vectors of its 64 tokens,
+L2-normalised, compared by cosine similarity. No extra network, no extra
+training.
 
 The placement matters more than the mechanism. Retrieved frames **replace the
 oldest context slots** rather than extending the context. The block count stays
@@ -156,24 +155,26 @@ it used.
 Three things did not go the way the design assumed. All three are in the docs
 with numbers attached rather than quietly fixed.
 
-**Retrieval memory does not help at this scale.** It was the point of stage 5
-and it is a wash: -0.69 dB on return-to-place against a ±1.03 dB run-to-run
-spread. The first version of this evaluation ran one rollout per configuration
-and showed memory *winning* by 0.47 dB; four seeds showed that the win was the
-seed. The mechanism itself is fine: the correct past frame ranks top for 55%
-of genuine revisits and top-two for ~80%. But a 2.0M-parameter model leans so
-heavily on the most recent frame that perturbing a distant context slot barely
-registers. See [DRIFT.md](DRIFT.md).
+**Retrieval memory does not help, and the retrieval is why.** At 2M it is a
+wash: -0.69 dB on return-to-place against a +/-1.03 dB run-to-run spread. The
+first version of this evaluation ran one rollout per configuration and showed
+memory winning; four seeds showed that the win was the seed. I first blamed the
+model, arguing that a 2.0M-parameter model leans too hard on the most recent
+frame to use a distant context slot. The 26M checkpoint undercuts that: memory
+is still not measurable there (-0.64 dB against +/-1.69 dB). Measuring the key
+directly explains both. At a genuine revisit, the most similar stored frame was
+taken at the same place only 11% of the time, and one of the top two 17% of
+the time, so most retrievals put a different room into context. See
+[DRIFT.md](DRIFT.md) and [DRIFT_26M.md](DRIFT_26M.md).
 
-**The retrieval key had to change, and the first fix was also wrong.** The
-original bag-of-codes histogram scored matched revisits at 0.34 against 0.09
-for random pairs, so the 0.9 threshold fired on literally nothing across 1000
-frames. Mean-pooled codebook embeddings fixed the *scale* (0.96 vs 0.47) by
-using the metric structure the codebook already learned. But the intuition that
-came with it, that a spatially-aware key would discriminate better, was
-backwards: 2x2 spatial pooling dropped top-1 retrieval from 0.55 to 0.14,
-because turning your head moves content across the grid and a spatial key reads
-that as a different place.
+**The retrieval key had to change, and it is still the weak link.** The
+original bag-of-codes histogram scored matched revisits too low for a
+similarity threshold to mean anything. Mean-pooled codebook embeddings fixed
+the *scale* by using the metric structure the codebook already learned. They
+did not fix the *ranking*: in a maze built from a handful of repeated textures,
+many places look alike on average, and the most similar stored frame is usually
+from somewhere else. A geometry-aware key is the next thing to try, not a
+bigger model.
 
 **More decoding passes buy nothing here.** The premise of stage 4 was that
 MaskGIT trades quality for speed and the job is finding the sweet spot. On this
@@ -198,7 +199,8 @@ that at no measurable cost: 0.75 fps to 41.3 fps end to end.
   toolchain (torchao, bitsandbytes, TensorRT) and is not implemented.
 * Retrieval is keyed on appearance, not geometry. Two corridors with the same
   texture and lighting are, to this memory, the same place. A learned or
-  pose-aware key would separate them; a bag-of-codes histogram will not.
+  pose-aware key would separate them; a mean of codebook embeddings does not,
+  which is most of why retrieval picks the wrong place.
 * Splicing a remembered frame into slot 0 makes that slot's transition a
   fiction: the action stored with it did not produce the frame now sitting in
   slot 1. The retrieved frames are there to put the room's textures back in

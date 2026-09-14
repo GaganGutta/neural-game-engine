@@ -9,8 +9,9 @@ Where the frame time goes, and what each switch does about it:
   so its keys and values are computed once per frame instead of once per
   iteration (``use_cache``). Saves a factor of roughly the iteration count.
 * Raster decoding needs one forward pass per token, so 64 per frame. MaskGIT
-  fills every remaining slot each pass and keeps the confident ones, so 8
-  passes cover the frame (``decode``).
+  fills every remaining slot each pass and keeps the confident ones, so a few
+  passes cover the frame: 4 in the shipped configs (``decode``,
+  ``maskgit_steps``).
 * bf16/fp16 autocast, ``torch.compile`` and int8 dynamic quantisation each
   attack the cost of a single pass (``dtype``, ``compile``, ``int8``).
 

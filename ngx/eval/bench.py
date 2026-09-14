@@ -193,6 +193,10 @@ def main() -> None:
         )
 
     first_fps = next((r["fps"] for r in rows if "fps" in r), 1.0)
+    regen = " ".join(["python -m ngx.eval.bench --config", a.config]
+                     + (["--set", *a.set] if a.set else [])
+                     + ([f"--frames {a.frames}"] if a.frames != 30 else [])
+                     + ([f"--out {a.out}"] if a.out != "docs/BENCHMARKS.md" else []))
     lines = [
         "# Benchmarks",
         "",
@@ -238,7 +242,7 @@ def main() -> None:
         "an exact transformation, and a bit-for-bit identical rollout under greedy "
         "decoding is the proof rather than the claim.",
         "",
-        "Regenerate with `python -m ngx.eval.bench --config configs/small.yaml`.",
+        f"Regenerate with `{regen}`.",
         "",
     ]
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)

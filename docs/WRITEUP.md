@@ -186,8 +186,11 @@ and [DECODE.md](DECODE.md) says so. `maskgit_steps` is 4 because 4 is where the
 measurements stop moving, not because 8 sounded right.
 
 What did work as designed: the KV cache is exactly what it claims to be
-(bit-identical rollouts, 6.2x), and MaskGIT over raster is a 8.8x win on top of
-that at no measurable cost: 0.75 fps to 41.3 fps end to end.
+(bit-identical rollouts, 6.3x), and MaskGIT over raster is an 8.6x win on top
+of that: 0.65 fps to 35.47 fps end to end on the laptop CPU. At 26M the same
+table goes from 0.09 to 10.87 fps, and there bf16 and int8 pay for themselves
+where at 2M they did not. See [BENCHMARKS.md](BENCHMARKS.md) and
+[BENCHMARKS_26M.md](BENCHMARKS_26M.md).
 
 ## Honest limitations
 

@@ -96,7 +96,7 @@ What the pre-registered rules said:
 * **Rule 2, which axis moves which metric: mostly as predicted, with two
   surprises.** Return-to-place is flat in capacity (9.02 dB at 8M and 9.60 dB
   at 26M, both inside the 2M seeds' 8.15 to 10.33 dB) and jumps with context,
-  to 12.22 dB at 12 frames, which is the game's own score. So the context axis
+  to 12.22 dB at 12 frames, 0.2 dB above the game's own 12.02 dB. So the context axis
   measures what it was built to measure, and the pre-registered wrong-diagnosis
   branch did not fire. At 24 frames it falls back to 8.68 dB. At matched tokens
   that rung saw each training window about once (1.04 epochs), and the ladder
@@ -111,10 +111,13 @@ What the pre-registered rules said:
   for 2 to 10 frames, the real game keeps the frame identical 79% of the time
   and moves 33 tokens when it moves. The 2M rungs at this budget are stickier:
   87 to 94% identical but only 2 to 4 tokens when they move, changes suppressed
-  rather than learned. From 8M up both numbers move toward the reference
-  together, 92% and 22 tokens at 8M, 87% and 28 at 26M, 87 to 89% and 21 to 22
-  at 12 and 24 frames: fewer, larger, settling-sized changes, which is what
-  learning the momentum and view-bob decay looks like. Every rung is still
+  rather than learned. From 8M up the churn moves toward the reference while the identical rate
+  stays inside the 2M seeds' range: 92% and 22 tokens at 8M, 87% and 28 at
+  26M, 87 to 89% and 21 to 22 at 12 and 24 frames. Against the CPU checkpoint
+  the rule was written for (51% identical, 4 tokens when it moves) both
+  numbers are up, the pre-registered sharper branch: fewer, larger,
+  settling-sized changes, which is what learning the momentum and view-bob
+  decay looks like. Every rung is still
   stiller than the game, and past 10 frames all of them, like the game, stay
   at 100% identical.
 

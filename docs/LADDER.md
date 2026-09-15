@@ -11,6 +11,7 @@ Every rung is scored on its final checkpoint, on the same held-out frames, refer
 | ladder-8m-t4-s0 | 7.5M | 6 | 2.92B | 4.00 | 1.660 | 0.442 | 28.23 dB | 21.77 | 30.97 | **70%** | +5.64 | +4.17 | +2.48 | +1.52 | 9.02 (12.02) dB | 92% / 22.4 | 100.0% |
 | ladder-26m-t4-s0 | 25.7M | 6 | 2.92B | 4.00 | 1.202 | 0.560 | 29.39 dB | 21.77 | 30.97 | **83%** | +6.77 | +6.46 | +5.81 | +2.56 | 9.60 (12.02) dB | 87% / 27.6 | 100.0% |
 | ladder-ctx12-t4-s0 | 7.5M | 12 | 2.92B | 2.03 | 1.578 | 0.467 | 28.63 dB | 21.77 | 30.97 | **75%** | +5.93 | +5.19 | +4.01 | +0.77 | 12.22 (12.02) dB | 87% / 22.4 | 100.0% |
+| ladder-ctx24-t4-s0 | 7.5M | 24 | 2.92B | 1.04 | 1.550 | 0.467 | 28.58 dB | 21.77 | 30.97 | **74%** | +6.29 | +5.73 | +4.44 | +0.88 | 8.68 (12.02) dB | 89% / 20.6 | 100.0% |
 
 Real-game hold-still reference: k=2-10 79.4% identical, 32.7 tokens when it moves; k>10 100%. Return-to-place is shown as model (game ceiling) over 40 revisit pairs. Headroom is on the moving subset: (model - copy) / (ceiling - copy). Lead is model minus frozen-frame PSNR. Held-out loss is the training objective on 4096 fixed validation frames (`python -m ngx.eval.heldout`).
 

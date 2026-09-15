@@ -2,19 +2,29 @@
 
 **A game you play inside a neural network.** Train an action-conditioned world
 model on Doom, then throw the game engine away and drive the model with your
-keyboard. Every pixel below the right-hand label was predicted by a transformer
-from the last few frames plus a keypress.
+keyboard. Every pixel on the right was predicted by a transformer from the last
+few frames plus a keypress.
 
-![the model tracking the real game](assets/demo.gif)
+![a 26M-parameter world model tracking the real game](assets/demo_26m.gif)
 
-*Left: VizDoom. Right: a 2.0M-parameter transformer predicting the next frame
-from the last 6 frames plus the action, at 41 fps on a laptop CPU. Same actions
-into both. The PSNR readout is the honest part. Watch it fall as the rollout
-feeds on its own output.*
+*Left: VizDoom. Right: a 25.7M-parameter transformer predicting each frame from
+its last 6 frames (6 real ones to start, then its own predictions) plus the same
+action, with no game engine running.
+PSNR against the real frame is 26.8 dB one frame in, 30.1 dB at frame 8, 16.7 dB
+at frame 16 and 9.7 dB at frame 32: it tracks the game for about a dozen frames
+and then commits to a continuation of its own. Seed 0, sampled decoding.
+Regenerate with `python scripts/make_gif.py --config configs/ladder/26m.yaml
+--set name=ladder-26m-t4-s0 dynamics_ckpt=runs/ladder-26m-t4-s0/dynamics/final.pt
+--frames 110 --out assets/demo_26m.gif`.*
 
 ```bash
 python play.py
 ```
+
+`play.py` runs the 2.0M-parameter checkpoint that ships in `checkpoints/small/`,
+which decodes at 35.47 fps on a laptop CPU. The 26M checkpoint in the GIF is a
+98 MiB file, past GitHub's 50 MiB recommended size, so it is kept out of the
+repo; `configs/ladder/26m.yaml` trains it in about four hours on one RTX 4090.
 
 ## What is actually running
 
@@ -42,46 +52,6 @@ handful of frames that prime the context when you start (and when you press R).
 The feedback loop is the whole problem. Each predicted frame becomes context
 for the next one, so errors compound: the model does not simulate the world, it
 samples a plausible continuation of it, and plausible continuations drift.
-Sections below measure how fast it drifts and what claws it back.
-
-## Quickstart
-
-```bash
-pip install -r requirements.txt
-```
-
-Then play the shipped checkpoint. The weights are in `checkpoints/small/` (16 MB), so
-this works from a clone with no training and no dataset:
-
-```bash
-python play.py
-```
-
-Or build the whole thing from scratch (see [reproducing](#reproducing) for timings):
-
-```bash
-bash scripts/reproduce.sh configs/small.yaml
-```
-
-Controls: `W`/`↑` walk, `A`/`D` turn, hold `W` with a turn to round a corner.
-`R` reseeds from the real game, `M` toggles retrieval memory, `TAB` switches
-between MaskGIT and raster decoding, `ESC` quits.
-
-## The pipeline
-
-| stage | what it does | entry point |
-|---|---|---|
-| 1. data | scripted + random policies through VizDoom, `(frame, action)` pairs at 64x64 | `ngx.data.collect` |
-| 2. tokenizer | VQ-VAE, 64x64 RGB down to an 8x8 grid of codebook indices | `ngx.train.train_vqvae` |
-| 3. dynamics | causal transformer over frame tokens + action embeddings | `ngx.train.train_dynamics` |
-| 4. speed | KV cache, MaskGIT parallel decode, bf16, int8 | `ngx.eval.bench` |
-| 5. drift | sliding context + retrieval memory, measured | `ngx.eval.drift` |
-
-Final numbers for the shipped checkpoint: tokenizer **28.2 dB** on held-out
-frames with 429/512 codes live; dynamics **2.0M params**, val loss 3.20, and
-0.152 token accuracy with the entire next frame masked, 78x better than the
-1/512 chance rate, and low enough that the world is recognisable rather than
-sharp.
 
 The one design decision worth reading about is the sequence layout: two
 streams in one sequence, so context stays clean while the target frame is
@@ -89,125 +59,175 @@ masked, which is what lets a single set of weights serve both a 64-pass
 autoregressive decoder and a 4-pass parallel one with no second training run.
 That is in [docs/WRITEUP.md](docs/WRITEUP.md).
 
+## Scaling ladder
+
+The first checkpoint was a 2.0M-parameter model trained on a laptop CPU for
+under one epoch. The question was whether more model would help or whether
+something was structurally wrong, so the ladder was pre-registered in
+[docs/LADDER_PREREG.md](docs/LADDER_PREREG.md) before any scaled model existed,
+with each later amendment dated before the results it touches: capacity (2M, 8M
+and 26M, written as 30M in the pre-registration, at a 6-frame context) and
+context (6, 12 and 24 frames at 8M), every rung at the same 2.9B-token budget on a 2M-frame dataset, each
+scored on its final checkpoint on the same held-out frames by
+`python -m ngx.eval.ladder`. Three seeds of the 2M rung put the resolution at
+0.08 dB; differences smaller than that are read as no effect.
+
+| rung | params | context | one-step PSNR, moving | headroom | held-out loss | closed-loop lead, k=16 | return-to-place (game) |
+|---|---|---|---|---|---|---|---|
+| 2M, 3 seeds | 2.0M | 6 | 27.04 to 27.12 dB | 57 to 58% | 2.151 to 2.172 | +1.48 to +2.31 dB | 8.15 to 10.33 dB (12.02) |
+| 8M | 7.5M | 6 | 28.23 dB | 70% | 1.660 | +2.48 dB | 9.02 dB (12.02) |
+| 26M | 25.7M | 6 | **29.39 dB** | **83%** | **1.202** | **+5.81 dB** | 9.60 dB (12.02) |
+| 8M, 12 frames | 7.5M | 12 | 28.63 dB | 75% | 1.578 | +4.01 dB | 12.22 dB (12.02) |
+| 8M, 24 frames | 7.5M | 24 | 28.58 dB | 74% | 1.550 | +4.44 dB | 8.68 dB (12.02) |
+
+*Headroom* is the share of the gap between copying the last frame (21.77 dB)
+and the tokenizer's own round trip (30.97 dB) that the model closes, on moving
+transitions. *Closed-loop lead* is how far the model's own rollout stays ahead
+of a frozen frame. *Return-to-place* compares the model's frames at two moments
+the player stood in the same spot; the game's own frames score the number in
+brackets. Full table, hold-still buckets and the 8M learning-rate probe are in
+[docs/LADDER.md](docs/LADDER.md).
+
+What the pre-registered rules said:
+
+* **Rule 1, starved or structural: starved.** Headroom rises at every capacity
+  step, 58% to 70% to 83%, and 8M to 26M adds 1.16 dB, about 15 times the
+  resolution. The small model was short of capacity and data, not broken.
+* **Rule 2, which axis moves which metric: mostly as predicted, with two
+  surprises.** Return-to-place is flat in capacity (9.02 dB at 8M and 9.60 dB
+  at 26M, both inside the 2M seeds' 8.15 to 10.33 dB) and jumps with context,
+  to 12.22 dB at 12 frames, which is the game's own score. So the context axis
+  measures what it was built to measure, and the pre-registered wrong-diagnosis
+  branch did not fire. At 24 frames it falls back to 8.68 dB. At matched tokens
+  that rung saw each training window about once (1.04 epochs), and the ladder
+  cannot separate the longer window from the fewer distinct windows, so by the
+  pre-registered bound it says only that 8M could not use 24 frames at this
+  budget. Not predicted: one-step PSNR also moved with context, by 0.40 dB at
+  12 frames, five times the resolution though a third of the 8M-to-26M step;
+  and closed-loop lead at k=16 moved with capacity (+2.48 to +5.81 dB) more
+  than with context (+2.48 to +4.44 dB), while at k=32 it shrank with context
+  (+1.52 to +0.77 dB).
+* **Rule 3, stillness: sharper from 8M up, stickier at 2M.** Holding still
+  for 2 to 10 frames, the real game keeps the frame identical 79% of the time
+  and moves 33 tokens when it moves. The 2M rungs at this budget are stickier:
+  87 to 94% identical but only 2 to 4 tokens when they move, changes suppressed
+  rather than learned. From 8M up both numbers move toward the reference
+  together, 92% and 22 tokens at 8M, 87% and 28 at 26M, 87 to 89% and 21 to 22
+  at 12 and 24 frames: fewer, larger, settling-sized changes, which is what
+  learning the momentum and view-bob decay looks like. Every rung is still
+  stiller than the game, and past 10 frames all of them, like the game, stay
+  at 100% identical.
+
+The 8M learning rate came from a pre-registered probe. The largest rate tried,
+1.68e-3, won even after the one allowed extension, so the best rate may lie
+above it, and every rung above 2M ran it (26M at 1.45e-3, scaled for width).
+
 ## Making it fast
 
-**0.75 fps to 41.3 fps, a 55x speedup**, on an 8-core laptop CPU with no GPU.
-Each row adds one change to the fastest configuration so far; a change that
-measures slower is reverted and labelled.
+On a laptop CPU with no GPU, for the 26M checkpoint in the GIF. Each row adds
+one change to the fastest configuration so far; a change that measures slower
+is reverted and labelled.
 
 | step | fps | ms/frame | passes/frame | vs. row 1 | weights | output delta | |
 |---|---|---|---|---|---|---|---|
-| raster AR, no KV cache | 0.75 | 1328 | 64 | 1.0x | 8.0 MB | reference | kept |
-| + KV cache | 4.68 | 214 | 64 | **6.2x** | 8.0 MB | identical | kept |
-| + MaskGIT parallel decode | **41.32** | 24.2 | 4 | **54.9x** | 8.0 MB | 14.8 dB | kept |
-| + bf16 autocast | 32.34 | 30.9 | 4 | 43.0x | 8.0 MB | 17.7 dB | reverted |
+| raster AR, no KV cache | 0.09 | 10552.2 | 64 | 1.0x | 102.9 MB | reference | kept |
+| + KV cache (within frame) | 0.60 | 1659.0 | 64 | 6.4x | 102.9 MB | identical | kept |
+| + MaskGIT parallel decode | 5.53 | 180.8 | 4 | 58.4x | 102.9 MB | 13.7 dB | kept |
+| + carry KV cache across frames | 7.89 | 126.8 | 4 | 83.2x | 102.9 MB | 16.1 dB | kept |
+| + bf16 autocast | 9.34 | 107.1 | 4 | 98.6x | 102.9 MB | 14.2 dB | kept |
 | + torch.compile | unavailable | | | | | | _no MSVC `cl.exe`_ |
-| + int8 dynamic quant | 33.62 | 29.7 | 4 | 44.7x | **0.5 MB** | 17.2 dB | reverted |
+| + int8 dynamic quant | **10.87** | 92.0 | 4 | **114.7x** | 26.7 MB | 12.1 dB | kept |
 
-Two things in that table are worth more than the headline number.
+`identical` on the KV-cache row is the proof, not a formatting quirk: caching
+the prefix is an exact transformation, so under greedy decoding the cached and
+uncached rollouts come out bit-for-bit the same. `output delta` compares each
+row with the configuration its change was applied to, so it answers "did this
+change alter the output" rather than doubling as a quality score. Carrying the
+cache across frames is fast but not exact, which is why the engine rebuilds it
+at every frame by default.
 
-`identical` on the KV-cache row is not a formatting quirk. It is the proof.
-Caching the prefix is supposed to be an *exact* transformation, so under greedy
-decoding the cached and uncached rollouts must come out bit-for-bit the same,
-and they do. `output delta` compares each row against the configuration its
-change was applied to, so it answers "did this change alter the output" rather
-than doubling as a quality score.
-
-And two of the four optimisations lost. bf16 and int8 both measure *slower*
-than fp32 here: the matmuls are small enough that quantise/dequantise overhead
-outruns the arithmetic saved. int8 still cuts weights 16x (8.0 MB to 0.5 MB),
-which matters if you are memory-bound rather than compute-bound. This machine
-is neither. `torch.compile` cannot run at all without MSVC. The table reports
-all of it rather than showing only the three rows that went up and to the right.
-
-Full detail in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), and
-[docs/DECODE.md](docs/DECODE.md) for why `maskgit_steps` is 4.
+The same table for the shipped 2M checkpoint goes from 0.65 to 35.47 fps, and
+there bf16 and int8 both measure slower than fp32 and are reverted: the
+matmuls are small enough that the conversion overhead outruns the arithmetic
+saved. Full detail in [docs/BENCHMARKS_26M.md](docs/BENCHMARKS_26M.md) and
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md), and [docs/DECODE.md](docs/DECODE.md)
+for why `maskgit_steps` is 4 (measured on the 2M checkpoint).
 
 ## Fighting drift
 
 A 6-frame context means everything the model knew about a room is gone six
 frames after you leave it. Walk out, walk back, and the room gets regenerated
-from nothing, usually as a *different* room. The rollout stays plausible while
-ceasing to be consistent.
+from nothing.
 
-The countermeasure is a retrieval memory keyed on the mean codebook embedding
-of each frame, compared by cosine similarity. Retrieved frames **replace the
-oldest context slots** rather than extending the context, so the model sees
-exactly the block layout it was trained on and needs no retraining, and you can
-toggle it mid-game with `M`.
+The countermeasure is a retrieval memory keyed on each frame's mean codebook
+embedding. Retrieved frames **replace the oldest context slots** rather than
+extending the context, so the model sees exactly the block layout it was
+trained on and needs no retraining, and you can toggle it mid-game with `M`.
 
-**It does not work at this scale, and the repo says so.** Over 1000 frames on a
-single unbroken episode, scored on 40 genuine revisits with a median gap of 507
-frames:
+**It does not work on either checkpoint, and the repo says so.** Over 1000 frames
+of one unbroken episode, four sampled rollouts per configuration, scored on 40
+revisits with a median gap of 507 frames:
 
-| config | return-to-place PSNR | game itself (ceiling) | retrieval fired |
-|---|---|---|---|
-| sliding context only | **9.89 ± 0.54 dB** | 11.25 dB | 0/1000 frames |
-| retrieval memory | **9.20 ± 0.88 dB** | 11.25 dB | 497/1000 frames |
+| checkpoint | PSNR at k=1 / k=10 | return-to-place, sliding context | with retrieval memory | game (ceiling) |
+|---|---|---|---|---|
+| 2M, shipped CPU checkpoint | 16.2 / 14.2 dB | 9.89 +/- 0.54 dB | 9.20 +/- 0.88 dB | 11.25 dB |
+| 26M ladder rung | 30.5 / 20.6 dB | 11.24 +/- 1.57 dB | 10.60 +/- 0.63 dB | 11.25 dB |
 
-The first version of this evaluation ran one rollout per configuration and
-showed memory winning by 0.47 dB. Four seeds showed the win was the seed. The
-mechanism works: the correct past frame is the top-ranked match for 55% of
-genuine revisits and top-two for ~80%. But a 2.0M-parameter model leans so
-hard on the most recent frame that perturbing a distant context slot barely
-registers, and the ~45% of retrievals that surface the wrong room cost about
-what the right ones gain.
+Memory moves return-to-place by -0.69 dB against a run-to-run spread of
++/-1.03 dB on the 2M checkpoint, and by -0.64 dB against +/-1.69 dB at 26M: no
+measurable effect either way. The measured weak link is the key. At the 36
+revisits where memory held a frame from the same spot, the most similar stored
+frame was taken there only 11% of the time, and one of the top two 17% of the
+time. Whether the model could use a correct retrieval is untested, and at 26M
+sliding context alone already matches the game's own 11.25 dB, which leaves
+this metric no room to show a gain. So `memory.enabled` ships as `false`, and
+[docs/DRIFT.md](docs/DRIFT.md) and [docs/DRIFT_26M.md](docs/DRIFT_26M.md) have
+the numbers.
 
-So `memory.enabled` ships as `false`, the feature stays on the `M` key, and
-[docs/DRIFT.md](docs/DRIFT.md) has the diagnosis. Note also the *ceiling*: the
-real game only scores 11.25 dB against itself at matched poses, because "same
-pose" is a tolerance and not an identity. A model number is meaningless without
-it.
-
-## Scaling ladder, in progress
-
-The 2.0M CPU checkpoint above was trained on 150k frames for under one epoch.
-The same architecture trained for 16 epochs on a 2M-frame set, on a rented
-RTX 4090, reaches 27.74 dB one-step PSNR on moving transitions (`ladder-2m-s0`
-in [docs/LADDER.md](docs/LADDER.md), against a 30.97 dB tokenizer ceiling on the
-same frames, 65% of the headroom over copy-last-frame).
-
-![2M model after 16 epochs, closed loop](assets/demo_2m16.gif)
-
-*Same layout as the top of the page, sampled decoding, 110 closed-loop frames.
-It tracks the real game for the first few seconds and then commits to a room
-that is not there; the PSNR readout is the record of when. Regenerate with
-`python scripts/make_gif.py --config configs/ladder/2m.yaml --set
-name=ladder-2m-s0 --frames 110 --out assets/demo_2m16.gif`.*
-
-The ladder itself (2M, 8M, 26M at a fixed 6-frame context, then 6, 12 and 24
-frames of context at 8M, all at a matched 2.9B-token budget) is pre-registered
-in [docs/LADDER_PREREG.md](docs/LADDER_PREREG.md), and every rung is scored by
-`python -m ngx.eval.ladder` on its final checkpoint and the same held-out frames.
-Three seeds of the 2M rung put the ladder's resolution at 0.08 dB. At the same
-2.9B tokens, headroom captured goes 58% at 2M, 70% at 8M and 83% at 26M. The
-context rungs are training.
+These drift runs sample from a 6-frame start, where the ladder table decodes
+greedily from a 24-frame start so that every context length is scored on the
+same frames, which is why the 26M return-to-place numbers differ between the two
+tables. The 2M row here is the shipped CPU checkpoint (150k frames, under one
+epoch), not the ladder's 2M rung, so the gap between the rows mixes scale with
+data and training.
 
 ## Reproducing
 
-Everything below was run on an 8-core laptop CPU (Ryzen 9 8945HS, 32 GB), no
-GPU, from a cold checkout:
+The CPU pipeline runs on a laptop CPU with no GPU, from a cold checkout, in a
+few hours end to end:
 
-| step | command | time |
-|---|---|---|
-| collect 150k frames | `python -m ngx.data.collect --frames 150000 --workers 6` | 1.4 min |
-| train tokenizer | `python -m ngx.train.train_vqvae --config configs/small.yaml` | 27 min |
-| tokenize dataset | `python -m ngx.data.tokenize --config configs/small.yaml` | 1.3 min |
-| train dynamics | `python -m ngx.train.train_dynamics --config configs/small.yaml` | 105 min |
+| step | command |
+|---|---|
+| collect 150k frames | `python -m ngx.data.collect --frames 150000 --workers 6` |
+| train tokenizer | `python -m ngx.train.train_vqvae --config configs/small.yaml` |
+| tokenize dataset | `python -m ngx.data.tokenize --config configs/small.yaml` |
+| train dynamics | `python -m ngx.train.train_dynamics --config configs/small.yaml` |
 
 Or all of it at once with `bash scripts/reproduce.sh configs/small.yaml`.
+`configs/small.yaml` now trains rotary positions; the shipped checkpoint used
+absolute ones, so add `--set dynamics.pos_encoding=absolute` to the dynamics
+step to train that exact variant.
 
-The tokenizer is the part that works well at this scale. 64 discrete tokens
-per frame, reconstructed at **28.2 dB** on held-out frames, 429 of 512 codebook
-entries in active use. Top row is ground truth, bottom row is a round trip
-through the codebook:
+The ladder rungs train on one GPU from `configs/ladder/` and share a 2M-frame
+dataset, collected once and tokenized with the shipped tokenizer:
 
-![tokenizer reconstructions](assets/tokenizer.png)
+```bash
+python -m ngx.data.collect --out data/mwh2m --frames 2000000 --workers 8 --seed 100
+python -m ngx.data.tokenize --config configs/ladder/26m.yaml
+```
 
-`configs/full.yaml` is the scale the design actually targets: 2M frames, a
-1024-entry codebook, and a 12-layer 512-wide dynamics model over a 16-frame
-context (~38M params). That is roughly a day per stage on one GPU and has not
-been run here.
+Then each rung, for example:
+
+```bash
+python -m ngx.train.train_dynamics --config configs/ladder/26m.yaml --resume --set name=ladder-26m-t4-s0 compile=true
+python -m ngx.eval.heldout --config configs/ladder/26m.yaml --set name=ladder-26m-t4-s0 --out runs/ladder-26m-t4-s0/heldout.json
+python -m ngx.eval.ladder --config configs/ladder/26m.yaml --runs ladder-26m-t4-s0
+```
+
+On rented RTX 4090s the 2M rung took 73.5 to 73.6 min per seed, 8M 89.3 min, 26M
+240.6 min, and 8M 115.9 min at 12 frames and 168.7 min at 24. Everything above
+2M, including the learning-rate probe and two pods that failed with GPU faults,
+cost about $9 of GPU rental; the whole ladder about $15.
 
 ## Repo layout
 
@@ -216,12 +236,13 @@ ngx/
   envs/          VizDoom wrappers, discrete action sets, pose (eval only)
   data/          collection, tokenization, datasets
   models/        vqvae.py, dynamics.py
-  train/         train_vqvae.py, train_dynamics.py
+  train/         train_vqvae.py, train_dynamics.py (token budgets, resume)
   infer/         engine.py (KV cache, decoders), memory.py, quantize.py
-  eval/          bench.py, drift.py, decode_quality.py
-configs/         small.yaml (CPU), full.yaml (one GPU)
+  eval/          ladder.py, heldout.py, bench.py, drift.py, baselines.py, ...
+configs/         small.yaml (CPU), full.yaml, ladder/ (2m, 8m, 26m, ctx12, ctx24)
 checkpoints/     the trained weights play.py loads by default
-tests/           train/inference equivalence, cache exactness, memory behaviour
+docs/            LADDER_PREREG.md, LADDER.md, BENCHMARKS*.md, DRIFT*.md, WRITEUP.md
+tests/           train/inference equivalence, cache exactness, resume, eval alignment
 play.py          the demo
 ```
 
@@ -235,32 +256,36 @@ overwriting them.
 python -m pytest tests/ -q
 ```
 
-The one that matters is `test_cached_inference_matches_training_forward`:
-`play.py` never runs the training forward pass, so if the cached path and the
-training path ever disagree, the model you play is not the model you trained,
-and the failure is silent, because a subtly wrong world model still produces
-plausible-looking Doom.
+31 tests, a few seconds on a CPU. The one that matters most is
+`test_cached_inference_matches_training_forward`: `play.py` never runs the
+training forward pass, so if the cached path and the training path ever
+disagree, the model you play is not the model you trained, and the failure is
+silent, because a subtly wrong world model still produces plausible-looking
+Doom.
 
 ## Limitations
 
-* **The shipped checkpoint is CPU-scale, and it shows.** 150k frames, a 2.0M
-  parameter dynamics model, a 6-frame context, under one pass over the data.
-  Expect a recognisable but soft world that drifts within a few hundred frames.
-  The pipeline is the artifact; the checkpoint proves it runs end to end.
-* **The dynamics config was sized by measurement, not by taste.** On this CPU
-  the binding constraint is samples seen rather than parameters, so a 192-wide
-  model over a 6-frame context beat a 256-wide model over 8 frames by 2.2x on
-  windows-per-second at equal wall clock. On a GPU that trade reverses.
-* **`torch.compile` is unavailable here.** Inductor needs MSVC `cl.exe` on
-  Windows and it is not installed, so that benchmark row reports the failure
-  rather than a number.
-* **int8 is CPU-only.** PyTorch's dynamic quantisation lowers to
-  fbgemm/qnnpack; the GPU equivalent is a different toolchain and is not
-  implemented here.
+* **The shipped checkpoint is the CPU-scale one.** `play.py` runs the 2.0M
+  model because the 26M weights are kept out of the repo. It is recognisable
+  but soft, and it drifts off the real game within about 50 frames: PSNR falls
+  from 16.2 dB at step 1 to 10.6 dB at step 50 ([docs/DRIFT.md](docs/DRIFT.md)).
+* **One seed above 2M.** Only the 2M rung was run three times, so the 0.08 dB
+  resolution is measured at 2M and assumed at the larger rungs.
+* **The context axis ran at 8M.** As pre-registered, a result there speaks for
+  8M, not for context in general.
+* **The learning rate may be under-tuned upward.** The probe's largest rate won.
+* **Return-to-place can beat the game.** It rewards two frames looking alike,
+  and a model can draw two similar-looking frames without drawing the right
+  room.
+* **`torch.compile` is unavailable on this Windows laptop** (Inductor needs
+  MSVC `cl.exe`). The 8M, 26M and context rungs trained with `compile=true` on
+  the GPU; the 2M rungs ran without it.
+* **int8 is CPU-only.** PyTorch's dynamic quantisation lowers to fbgemm or
+  qnnpack; the GPU route is a different toolchain and is not implemented.
+* **Retrieval is keyed on appearance, not geometry,** and at a revisit its top
+  match is usually not from the same spot.
 * **One scenario is wired end to end.** The env wrapper handles five VizDoom
   scenarios; only `my_way_home` has been trained and evaluated.
-* **Retrieval is keyed on appearance, not geometry.** Two corridors with the
-  same texture and lighting are, to this memory, the same place.
 
 ## License
 
